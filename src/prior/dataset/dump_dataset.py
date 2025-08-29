@@ -224,11 +224,14 @@ class DumpDataset(torch.utils.data.Dataset):
 
         # Filter by layers_by_model
         if self.layers_by_model:
-            allowed = [(mid, ly) for mid, layers in self.layers_by_model.items() for ly in layers]
-            mid_ok = pl.col('model_id').is_in([a[0] for a in allowed])
-            ly_ok = pl.struct(['model_id', 'layer']).is_in(
-                pl.DataFrame({'model_id': [a[0] for a in allowed], 'layer': [a[1] for a in allowed]})
-            )
+            # allowed: list of dicts [{'model_id': ..., 'layer': ...}, ...]
+            allowed = [
+                {'model_id': mid, 'layer': ly}
+                for mid, layers in self.layers_by_model.items()
+                for ly in layers
+            ]
+            mid_ok = pl.col('model_id').is_in([d['model_id'] for d in allowed])
+            ly_ok = pl.struct(['model_id', 'layer']).is_in(allowed)
             self.df_index = self.df_index.filter(mid_ok & ly_ok)
 
         # Sort for locality: utterance_id -> model_id -> layer
