@@ -17,10 +17,6 @@ setup(
     package_dir={"": "src"},
     include_package_data=True,
     # まずは scripts/ から素直に入れる。あとで console_scripts に切替OK
-    scripts=[
-        "scripts/dump_features.py",
-        "scripts/list_layers.py",
-    ],
     install_requires=[
         # core
         "numpy>=1.24",
