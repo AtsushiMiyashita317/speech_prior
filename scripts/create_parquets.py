@@ -1,4 +1,5 @@
 import json
+from os import path
 from pathlib import Path
 import polars as pl
 import argparse
@@ -13,9 +14,20 @@ def extract_info_from_meta(meta_path):
     return utterance_id, meta
 
 
-def collect_meta_files(dumps_root):
+def collect_meta_files(dumps_root, allowed_subsets):
     # dumps/<model_name>/<input_subset>/... の全meta.jsonを再帰的に探索
-    return list(Path(dumps_root).rglob("*.json"))
+    all_jsons = []
+    
+    for models in Path(dumps_root).iterdir():
+        if models.is_dir():
+            if allowed_subsets:
+                for subset in allowed_subsets:
+                    path = models / subset
+                    all_jsons.extend(list(path.rglob("*.json")))
+            else:
+                all_jsons.extend(list(models.rglob("*.json")))
+
+    return all_jsons
 
 def process_meta(meta_path, dumps_root):
     try:
@@ -63,8 +75,8 @@ def process_meta(meta_path, dumps_root):
         print(f"Error processing {meta_path}: {e}")
         return None, None
 
-def main(dumps_root, manifest_path, index_path):
-    meta_files = collect_meta_files(dumps_root)
+def main(dumps_root, manifest_path, index_path, allowed_subsets):
+    meta_files = collect_meta_files(dumps_root, allowed_subsets)
     manifest_rows = []
     index_rows = []
     with ThreadPoolExecutor() as executor:
@@ -82,5 +94,6 @@ if __name__ == "__main__":
     parser.add_argument("dumps_root", type=str, help="Path to dumps directory (e.g. dumps)")
     parser.add_argument("manifest_path", type=str, help="Output manifest Parquet file path")
     parser.add_argument("index_path", type=str, help="Output index Parquet file path")
+    parser.add_argument("--allowed_subsets", type=str, nargs="*", help="List of allowed input subsets")
     args = parser.parse_args()
-    main(args.dumps_root, args.manifest_path, args.index_path)
+    main(args.dumps_root, args.manifest_path, args.index_path, args.allowed_subsets)

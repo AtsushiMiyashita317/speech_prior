@@ -406,7 +406,6 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
     - audio.waveform -> [B, S_max]
     - features[model][layer] -> [B, T_max, D]
     """
-    import torch
 
     B = len(batch)
     # audio

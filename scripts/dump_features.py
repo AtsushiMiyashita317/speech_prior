@@ -102,8 +102,6 @@ def attach_xvector_hooks(xvec_model, layer_ids):
     def make_hook(name):
         def _hook(module, inp, out):
             x = out[0] if isinstance(out, (tuple, list)) else out
-            if x.dim() == 3 and x.shape[1] < x.shape[2]:  # [B,C,T] -> [B,T,C]
-                x = x.transpose(1, 2)
             acts[name] = x.detach().cpu()
         return _hook
 
