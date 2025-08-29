@@ -33,7 +33,7 @@ class FeatureRef:
     path: str
     T: Optional[int]
     D: int
-    fps: float
+    fps: int
     arch: str
     frontend: Optional[str] = None
 
@@ -264,7 +264,7 @@ class DumpDataset(torch.utils.data.Dataset):
                 path=abspath,
                 T=row.get('T'),
                 D=row.get('D', None),
-                fps=float(row['fps']) if row.get('fps') is not None else float(schema_row.get('fps', 0.0)),
+                fps=int(row['fps']) if row.get('fps') is not None else int(schema_row.get('fps', 0)),
                 arch=row.get('arch', schema_row.get('arch', '')),
                 frontend=row.get('frontend', schema_row.get('frontend')),
             )
