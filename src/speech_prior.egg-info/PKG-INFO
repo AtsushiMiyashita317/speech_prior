@@ -1,0 +1,19 @@
+Metadata-Version: 2.1
+Name: speech-prior
+Version: 0.1.0
+Summary: Unified dumper for wav2vec2 / HuBERT / WavLM / Conformer / x-vector frame-level features
+Author: (your name)
+Project-URL: Source, https://example.com/your-repo
+Project-URL: Issues, https://example.com/your-repo/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Provides-Extra: ssl
+Provides-Extra: xvector
+Provides-Extra: zarr
+Provides-Extra: hdf5
+Provides-Extra: arrow
+Provides-Extra: analytics
+Provides-Extra: dev
