@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import polars as pl
 import argparse
+from tqdm import tqdm
 
 def extract_info_from_meta(meta_path):
     with open(meta_path, "r") as f:
@@ -19,7 +20,8 @@ def collect_meta_files(dumps_root):
 def main(dumps_root, manifest_path, index_path):
     manifest_rows = []
     index_rows = []
-    for meta_path in collect_meta_files(dumps_root):
+    meta_files = collect_meta_files(dumps_root)
+    for meta_path in tqdm(meta_files, desc="Processing meta.json files"):
         try:
             with open(meta_path, "r") as f:
                 meta = json.load(f)
