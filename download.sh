@@ -1,7 +1,6 @@
 subsets=(
     dev-clean
     train-clean-100
-    train-clean-360
 )
 
 

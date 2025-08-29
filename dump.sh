@@ -1,7 +1,6 @@
 subsets=(
     dev-clean
     train-clean-100
-    train-clean-360
 )
 
 models=(
@@ -19,7 +18,7 @@ for subset in "${subsets[@]}"; do
         --exts .flac \
         --model "$model" \
         --layers 6,9,11 \
-        --num_workers 4
+        --num_workers 1
     done
 
     python scripts/dump_features.py \
@@ -30,7 +29,7 @@ for subset in "${subsets[@]}"; do
     --arch whisper \
     --model openai/whisper-small \
     --layers 6,9,11 \
-    --num_workers 4
+    --num_workers 1
 
     python scripts/dump_features.py \
     --input_dir data/librispeech/LibriSpeech/${subset} \
@@ -39,6 +38,6 @@ for subset in "${subsets[@]}"; do
     --exts .flac \
     --arch xvector \
     --model speechbrain/spkrec-xvect-voxceleb \
-    --layers 0,2,4 \
-    --num_workers 4
+    --layers 1,2,3 \
+    --num_workers 1
 done
