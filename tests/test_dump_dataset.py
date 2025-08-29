@@ -1,7 +1,7 @@
 import os
 import pytest
 import torch
-from src.prior.dataset.dump_dataset import DumpDataset
+from prior.dataset.dump_dataset import DumpDataset
 
 # テスト用のdumpsディレクトリ（実データが格納されているパスに合わせて変更してください）
 DUMPS_ROOT = "./"
