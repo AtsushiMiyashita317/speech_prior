@@ -1,5 +1,3 @@
-import cProfile
-import pstats
 import torch
 from prior.dataset.dump_dataset import DumpDataset, collate_nested_batch
 
@@ -35,7 +33,4 @@ def profile_dump_dataset_basic():
 
 
 if __name__ == "__main__":
-    cProfile.run("profile_dump_dataset_basic()", 'profile_result')
-    p = pstats.Stats('profile_result')
-    p.sort_stats('cumtime').print_stats(20)
-    
+    profile_dump_dataset_basic()
