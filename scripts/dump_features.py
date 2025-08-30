@@ -143,10 +143,11 @@ def dump_one_file(
     audio_rel = wav_path.resolve().relative_to(input_dir)
 
     subset = input_dir.name
+    filename = audio_rel.stem
 
     model_name = sanitize_for_dir(model_id)
     # 新仕様: ダンプファイルのパスを /path/to/audio/<model_dir>.<lname>.npy に変更
-    out_subdir = outdir / subset / audio_rel.parent
+    out_subdir = outdir / subset / audio_rel.parent / filename
     out_subdir.mkdir(parents=True, exist_ok=True)
 
     def out_npy(lname: str) -> Path:
