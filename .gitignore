@@ -1,7 +1,12 @@
 data
 dumps
 venv
+notebooks
 
 __pycache__
 **/__pycache__
 **/**/__pycache__
+
+*.log
+*.out
+*.err

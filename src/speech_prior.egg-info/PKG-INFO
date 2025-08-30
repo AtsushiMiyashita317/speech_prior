@@ -1,5 +1,5 @@
-Metadata-Version: 2.1
-Name: speech-prior
+Metadata-Version: 2.4
+Name: speech_prior
 Version: 0.1.0
 Summary: Unified dumper for wav2vec2 / HuBERT / WavLM / Conformer / x-vector frame-level features
 Author: (your name)
@@ -10,10 +10,43 @@ Classifier: License :: OSI Approved :: MIT License
 Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
 Requires-Python: >=3.9
 Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: soundfile>=0.12.1
+Requires-Dist: tqdm>=4.66
+Requires-Dist: torch>=2.2
+Requires-Dist: torchaudio>=2.2
+Requires-Dist: transformers>=4.42.0
+Requires-Dist: speechbrain>=0.5.14
+Requires-Dist: huggingface_hub>=0.20
+Requires-Dist: zarr>=2.16.1
+Requires-Dist: h5py>=3.11.0
+Requires-Dist: pyarrow>=16.1.0
+Requires-Dist: polars>=1.5.0
+Requires-Dist: duckdb>=1.0.0
 Provides-Extra: ssl
+Requires-Dist: transformers>=4.42.0; extra == "ssl"
 Provides-Extra: xvector
+Requires-Dist: speechbrain>=1.0.0; extra == "xvector"
 Provides-Extra: zarr
+Requires-Dist: zarr>=2.16.1; extra == "zarr"
+Requires-Dist: numcodecs>=0.12.1; extra == "zarr"
 Provides-Extra: hdf5
+Requires-Dist: h5py>=3.11.0; extra == "hdf5"
 Provides-Extra: arrow
+Requires-Dist: pyarrow>=16.1.0; extra == "arrow"
 Provides-Extra: analytics
+Requires-Dist: polars>=1.5.0; extra == "analytics"
+Requires-Dist: duckdb>=1.0.0; extra == "analytics"
 Provides-Extra: dev
+Requires-Dist: black>=24.4.2; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: line_profiler; extra == "dev"
+Dynamic: author
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
