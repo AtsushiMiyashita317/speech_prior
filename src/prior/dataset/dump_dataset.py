@@ -295,101 +295,105 @@ class DumpDataset(torch.utils.data.Dataset):
 
     @profile
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        import line_profiler
-        worker_info = torch.utils.data.get_worker_info()
-        worker_id = worker_info.id if worker_info is not None else 0
-        profiler = line_profiler.LineProfiler()
-        def _target():
-            uid = self.uids[idx]
-            utt = self.utt_map[uid]
-            audio_rel_path = utt['audio_path_rel']
+        uid = self.uids[idx]
+        utt = self.utt_map[uid]
+        audio_rel_path = utt['audio_path_rel']
 
-            # waveform (full)
-            wav_tensor: Optional[torch.Tensor] = None
-            sr = int(utt['sample_rate']) if 'sample_rate' in utt and utt['sample_rate'] is not None else None
-            if self.return_waveform:
-                audio_rel = self.wav_map[uid].path
-                wav_tensor, sr_loaded = self._load_waveform(audio_rel, sample_rate=sr)
-                if sr is None:
-                    sr = sr_loaded
-            S = int(wav_tensor.numel()) if wav_tensor is not None else int(utt['num_samples'])
-            audio_dict = {
-                'waveform': wav_tensor if wav_tensor is not None else None,
-                'sample_rate': int(sr or 16000),
-                'lengths': S,
-            }
+        # waveform (full)
+        wav_tensor: Optional[torch.Tensor] = None
+        sr = int(utt['sample_rate']) if 'sample_rate' in utt and utt['sample_rate'] is not None else None
+        if self.return_waveform:
+            audio_rel = self.wav_map[uid].path
+            wav_tensor, sr_loaded = self._load_waveform(audio_rel, sample_rate=sr)
+            if sr is None:
+                sr = sr_loaded
+        S = int(wav_tensor.numel()) if wav_tensor is not None else int(utt['num_samples'])
+        audio_dict = {
+            'waveform': wav_tensor if wav_tensor is not None else None,
+            'sample_rate': int(sr or 16000),
+            'lengths': S,
+        }
 
-            # features (full)
-            features: Dict[str, Dict[str, Dict[str, Any]]] = {}
-            lengths_frames: Dict[str, int] = {}
-            models = self.join_map[uid]
-            for mid, layers in self.layers_by_model.items():
-                if mid not in models:
+        # features (full)
+        features: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        lengths_frames: Dict[str, int] = {}
+        models = self.join_map[uid]
+        for mid, layers in self.layers_by_model.items():
+            if mid not in models:
+                if self.joinable == 'strict':
+                    raise KeyError(f"missing model {mid} for utterance {uid}")
+                else:
+                    continue
+            features[mid] = {}
+            for ly in layers:
+                ref = models[mid].get(ly)
+                if ref is None:
                     if self.joinable == 'strict':
-                        raise KeyError(f"missing model {mid} for utterance {uid}")
+                        raise KeyError(f"missing layer {mid}:{ly} for utterance {uid}")
                     else:
                         continue
-                features[mid] = {}
-                for ly in layers:
-                    ref = models[mid].get(ly)
-                    if ref is None:
-                        if self.joinable == 'strict':
-                            raise KeyError(f"missing layer {mid}:{ly} for utterance {uid}")
-                        else:
-                            continue
-                    npy = self._load_feature(ref.path)
-                    arr = torch.tensor(npy, dtype=self.dtype)  # [T, D]
-                    features[mid][ly] = {
-                        'feature': arr,
-                        'lengths': arr.shape[0],
-                        'fps': ref.fps,
-                    }
-                    lengths_frames[mid] = arr.shape[0]
+                npy = self._load_feature(ref.path)
+                arr = torch.tensor(npy, dtype=self.dtype)  # [T, D]
+                features[mid][ly] = {
+                    'feature': arr,
+                    'lengths': arr.shape[0],
+                    'fps': ref.fps,
+                }
+                lengths_frames[mid] = arr.shape[0]
 
-            meta = {
-                'sample_id': uid,
-                'utterance_id': uid,
-                'audio_path_rel': audio_rel_path,
-                'audio_sha256': utt.get('audio_sha256'),
-                'sample_rate': int(sr or 16000),
-                'num_samples': int(utt.get('num_samples', S)),
-                'duration_sec': float(utt.get('duration_sec', S / float(sr or 16000))),
-            }
+        meta = {
+            'sample_id': uid,
+            'utterance_id': uid,
+            'audio_path_rel': audio_rel_path,
+            'audio_sha256': utt.get('audio_sha256'),
+            'sample_rate': int(sr or 16000),
+            'num_samples': int(utt.get('num_samples', S)),
+            'duration_sec': float(utt.get('duration_sec', S / float(sr or 16000))),
+        }
 
-            out = {
-                'audio': audio_dict,
-                'features': features,
-                'meta': meta,
-            }
-            return out
-        result = profiler(_target)()
-        # 保存
-        profiler.dump_stats(f"lineprofile_worker{worker_id}.lprof")
-        return result
+        out = {
+            'audio': audio_dict,
+            'features': features,
+            'meta': meta,
+        }
+        return out
 
     # -- feature loading with memmap + disk cache
     @profile
     def _load_feature(self, path_rel: str) -> np.ndarray:
-        key = path_rel
-        if key in self.mem_cache:
-            try:
-                self.mem_cache_order.remove(key)
-            except ValueError:
-                pass
-            self.mem_cache_order.append(key)
-            return self.mem_cache[key]
-        cached = self.disk_cache.ensure(path_rel)
+        import line_profiler
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 0
+        profiler = line_profiler.LineProfiler()
         
-        arr = np.load(cached, mmap_mode='r' if self.mmap else None)
-        if self.mem_cache_budget > 0:
-            self.mem_cache[key] = arr
-            self.mem_cache_order.append(key)
-            used = sum(self.mem_cache[k].nbytes for k in self.mem_cache)
-            while used > self.mem_cache_budget and self.mem_cache_order:
-                old = self.mem_cache_order.pop(0)
-                used -= self.mem_cache[old].nbytes
-                del self.mem_cache[old]
-        return arr
+        def tmp():
+            key = path_rel
+            if key in self.mem_cache:
+                try:
+                    self.mem_cache_order.remove(key)
+                except ValueError:
+                    pass
+                self.mem_cache_order.append(key)
+                return self.mem_cache[key]
+            cached = self.disk_cache.ensure(path_rel)
+            
+            arr = np.load(cached, mmap_mode='r' if self.mmap else None)
+            if self.mem_cache_budget > 0:
+                self.mem_cache[key] = arr
+                self.mem_cache_order.append(key)
+                used = sum(self.mem_cache[k].nbytes for k in self.mem_cache)
+                while used > self.mem_cache_budget and self.mem_cache_order:
+                    old = self.mem_cache_order.pop(0)
+                    used -= self.mem_cache[old].nbytes
+                    del self.mem_cache[old]
+            return arr
+        
+        result = profiler(tmp)()
+        # 保存
+        profiler.dump_stats(f"lineprofile_worker{worker_id}.lprof")
+        return result
+        
+
 
 # ------------------------------------------------------------
 # Sampler
