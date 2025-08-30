@@ -15,18 +15,14 @@ def extract_info_from_meta(meta_path):
 
 
 def collect_meta_files(dumps_root, allowed_subsets):
-    # dumps/<model_name>/<input_subset>/... の全meta.jsonを再帰的に探索
+    # dumps/<subset> 配下のみ探索。allowed_subsets指定時はそのみ、未指定なら全サブディレクトリ
+    root = Path(dumps_root)
+    subsets = allowed_subsets if allowed_subsets else [d.name for d in root.iterdir() if d.is_dir()]
     all_jsons = []
-    
-    for models in Path(dumps_root).iterdir():
-        if models.is_dir():
-            if allowed_subsets:
-                for subset in allowed_subsets:
-                    path = models / subset
-                    all_jsons.extend(list(path.rglob("*.json")))
-            else:
-                all_jsons.extend(list(models.rglob("*.json")))
-
+    for subset in subsets:
+        subset_dir = root / subset
+        if subset_dir.is_dir():
+            all_jsons.extend(list(subset_dir.rglob("*.meta.json")))
     return all_jsons
 
 def process_meta(meta_path, dumps_root):

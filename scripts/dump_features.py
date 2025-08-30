@@ -140,17 +140,14 @@ def dump_one_file(
 ):
     # 出力ディレクトリ計算
     audio_rel_root = str(wav_path.resolve().relative_to(root))
-    input_dir_name = input_dir.name
-    rel_to_input = wav_path.relative_to(input_dir)
-    base_stem = wav_path.stem
 
     model_dir = sanitize_for_dir(model_id)
-    out_base_dir = (outdir / model_dir) if model_subdir else outdir
-    out_subdir = out_base_dir / input_dir_name / rel_to_input.parent
+    # 新仕様: ダンプファイルのパスを /path/to/audio/<model_dir>.<lname>.npy に変更
+    out_subdir = wav_path.parent
     out_subdir.mkdir(parents=True, exist_ok=True)
 
     def out_npy(lname: str) -> Path:
-        return out_subdir / f"{base_stem}.{lname}.npy"
+        return out_subdir / f"{model_dir}.{lname}.npy"
 
     # 既存チェック
     if not overwrite:
@@ -168,7 +165,39 @@ def dump_one_file(
     fw = {"torch": torch.__version__, "transformers": hf_version}
     device_name = str(device)
 
-    if arch == "ssl":
+    if arch == "raw":
+        # wav保存: /path/to/audio/<model_dir>.raw.wav
+        raw_path = out_subdir / "raw.wav"
+        sf.write(raw_path, wav, sr, subtype="FLOAT")
+        meta = {
+            "arch": arch,
+            "model": None,
+            "model_id": None,
+            "layer": "raw",
+            "dtype_saved": "float32",
+            "shape": list(wav.shape),
+            "fps": None,
+            "frame_hop_ms": None,
+            "sample_rate": sr,
+            "num_samples": num_samples,
+            "duration_sec": duration_sec,
+            "hop_samples": None,
+            "window_samples": None,
+            "subsampling": None,
+            "frontend": None,
+            "audio_path_rel": audio_rel_root,
+            "audio_sha256": audio_sha,
+            "dump_path_rel": str(raw_path.resolve().relative_to(root)),
+            "script_version": script_version,
+            "framework_versions": fw,
+            "device": device_name,
+            "created_at": datetime.datetime.now().isoformat(),
+            "system": platform.platform(),
+        }
+        with open(str(raw_path).replace(".wav", ".meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+        return {"status": "ok", "path": str(wav_path)}
+    elif arch == "ssl":
         inputs = processor(wav, sampling_rate=sr, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
         acts, handles = attach_ssl_hooks(model_obj, layer_ids)
@@ -304,7 +333,7 @@ def main():
     ap.add_argument("--input_dir", required=True)
     ap.add_argument("--outdir", default="dumps")
     ap.add_argument("--root", default=".")
-    ap.add_argument("--arch", choices=["ssl","whisper","xvector"], default="ssl")
+    ap.add_argument("--arch", choices=["ssl","whisper","xvector","raw"], default="ssl")
     ap.add_argument("--model", default="facebook/wav2vec2-base")
     ap.add_argument("--layers", default="6,9,11", help="ssl/whisper: 0始まりの層番号（カンマ区切り）")
     ap.add_argument("--num_workers", type=int, default=2)
