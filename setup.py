@@ -43,7 +43,7 @@ setup(
         "hdf5": ["h5py>=3.11.0"],
         "arrow": ["pyarrow>=16.1.0"],
         "analytics": ["polars>=1.5.0", "duckdb>=1.0.0"],
-        "dev": ["black>=24.4.2", "ruff>=0.5.0", "pytest>=8.2.0"],
+        "dev": ["black>=24.4.2", "ruff>=0.5.0", "pytest>=8.2.0", "line_profiler"],
     },
     classifiers=[
         "Programming Language :: Python :: 3",
