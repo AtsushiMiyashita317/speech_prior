@@ -5,7 +5,10 @@ import shutil
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any
-import cProfile
+try:
+    profile
+except NameError:
+    def profile(func): return func
 
 import numpy as np
 import polars as pl
@@ -129,7 +132,7 @@ class DumpDataset(torch.utils.data.Dataset):
       - SSD disk cache + memmap cache
     """
 
-    @cProfile.profile
+    @profile
     def __init__(
         self,
         base_dir: str,
@@ -310,7 +313,7 @@ class DumpDataset(torch.utils.data.Dataset):
                 wav = wav.mean(dim=0)
         return wav.to(self.dtype), int(sr)
 
-    @cProfile.profile
+    @profile
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         uid = self.uids[idx]
         utt = self.utt_map[uid]
@@ -376,7 +379,7 @@ class DumpDataset(torch.utils.data.Dataset):
         return out
 
     # -- feature loading with memmap + disk cache
-    @cProfile.profile
+    @profile
     def _load_feature(self, path_abs: str) -> np.ndarray:
         key = path_abs
         if key in self.mem_cache:
@@ -403,7 +406,7 @@ class DumpDataset(torch.utils.data.Dataset):
 # Collate
 # ------------------------------------------------------------
 
-@cProfile.profile
+@profile
 def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) -> Dict[str, Any]:
     """Pad/stack nested DumpDataset samples into a batch dict.
 
