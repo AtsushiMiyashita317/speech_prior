@@ -153,7 +153,7 @@ def dump_one_file(
         return out_subdir / f"{model_name}.{lname}.npy"
 
     # 既存チェック
-    if not overwrite:
+    if not overwrite and arch != "raw":
         if arch in ("ssl", "whisper"):
             targets = [f"layer{lid}" for lid in layer_ids]
         else:  # xvector
