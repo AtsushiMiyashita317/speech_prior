@@ -376,6 +376,11 @@ def main():
         model_obj = build_xvector_model(args.model, device)
         processor = None
         layer_ids = [int(x) for x in args.layers.split(",")]
+    elif args.arch == "raw":
+        defaults = dict(fps=16000, hop_samples=160, subsampling=1, frame_hop_ms=10.0, frontend="raw16k")
+        model_obj = None
+        processor = None
+        layer_ids = None
     else:
         raise ValueError(args.arch)
 
