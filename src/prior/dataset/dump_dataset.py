@@ -333,7 +333,7 @@ class DumpDataset(torch.utils.data.Dataset):
                     else:
                         continue
                 npy = self._load_feature(ref.path)
-                arr = torch.tensor(npy, dtype=self.dtype)  # [T, D]
+                arr = torch.from_numpy(npy)  # [T, D]
                 features[mid][ly] = {
                     'feature': arr,
                     'lengths': arr.shape[0],
@@ -443,7 +443,7 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
     # audio
     s_lens = [b['audio']['lengths'] for b in batch]
     Smax = max(s_lens) if s_lens else 0
-    batch_wave = torch.zeros((B, Smax), dtype=torch.float32)
+    batch_wave = torch.zeros((B, Smax))
     for i, b in enumerate(batch):
         wf = b['audio']['waveform']
         batch_wave[i, :wf.shape[0]].copy_(wf)
