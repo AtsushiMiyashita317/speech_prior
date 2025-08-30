@@ -31,7 +31,7 @@ def process_meta(meta_path, dumps_root):
             meta = json.load(f)
         audio_path = Path(meta["audio_path_rel"])
         rel_parts = Path(meta_path).relative_to(dumps_root).parts
-        input_subset = rel_parts[1] if len(rel_parts) > 1 else None
+        input_subset = rel_parts[0] if len(rel_parts) > 1 else None
         utterance_id = audio_path.stem
         manifest_row = {
             "utterance_id": utterance_id,
