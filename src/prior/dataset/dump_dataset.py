@@ -63,21 +63,17 @@ class DiskLRU:
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
 
-    def _cache_dst(self, relpath: str) -> str:
-        cache_path = os.path.join(self.cache_dir, relpath)
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        return cache_path
-
     @profile
     def ensure(self, relpath: str) -> str:
         """Ensure file is present in cache. Return cached absolute path (or original if disabled)."""
-        abspath = _abspath(self.base_dir, relpath)
+        abspath = os.path.join(self.base_dir, relpath)
         if not self.budget or not self.cache_dir:
             return abspath
-        dst = self._cache_dst(relpath)
+        dst = os.path.join(self.cache_dir, relpath)
         if os.path.exists(dst):
             return dst
 
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         _async_copy(abspath, dst)
 
         return abspath
@@ -337,7 +333,7 @@ class DumpDataset(torch.utils.data.Dataset):
                     else:
                         continue
                 npy = self._load_feature(ref.path)
-                arr = torch.tensor(npy, dtype=self.dtype)  # [T, D]
+                arr = torch.from_numpy(npy)  # [T, D]
                 features[mid][ly] = {
                     'feature': arr,
                     'lengths': arr.shape[0],
@@ -447,18 +443,10 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
     # audio
     s_lens = [b['audio']['lengths'] for b in batch]
     Smax = max(s_lens) if s_lens else 0
-    wavs = []
-    for b in batch:
+    batch_wave = torch.zeros((B, Smax), dtype=torch.float32)
+    for i, b in enumerate(batch):
         wf = b['audio']['waveform']
-        if wf is None:
-            wavs.append(torch.full((Smax,), pad_value))
-        else:
-            pad = Smax - wf.numel()
-            if pad > 0:
-                wavs.append(torch.cat([wf, torch.full((pad,), pad_value, dtype=wf.dtype)], dim=0))
-            else:
-                wavs.append(wf)
-    batch_wave = torch.stack(wavs, dim=0) if Smax > 0 else None
+        batch_wave[i, :wf.shape[0]].copy_(wf)
 
     # features
     features_out: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -477,10 +465,7 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
             fps = None
             for b in batch:
                 x_dict = b['features'].get(mid, {}).get(ly)
-                if x_dict is None:
-                    lens.append(0)
-                    seqs.append(None)
-                else:
+                if x_dict is not None:
                     x = x_dict['feature']
                     D = x.shape[1]
                     lens.append(x.shape[0])
@@ -488,18 +473,12 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
                     if fps is None:
                         fps = x_dict.get('fps', None)
             Tmax = max(lens) if lens else 0
-            mat = []
-            for x in seqs:
-                if x is None:
-                    mat.append(torch.full((Tmax, D), pad_value))
-                else:
-                    pad = Tmax - x.shape[0]
-                    if pad > 0:
-                        mat.append(torch.cat([x, torch.full((pad, D), pad_value, dtype=x.dtype)], dim=0))
-                    else:
-                        mat.append(x)
+            feature = torch.zeros((len(seqs), Tmax, D), dtype=torch.float32)
+            for i, x in enumerate(seqs):
+                feature[i, :x.shape[0], :].copy_(x)
+                
             features_out[mid][ly] = {
-                'feature': torch.stack(mat, dim=0),
+                'feature': feature,
                 'lengths': torch.tensor(lens, dtype=torch.long),
                 'fps': fps,
             }
