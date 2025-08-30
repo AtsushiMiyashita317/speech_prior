@@ -361,39 +361,26 @@ class DumpDataset(torch.utils.data.Dataset):
     # -- feature loading with memmap + disk cache
     @profile
     def _load_feature(self, path_rel: str) -> np.ndarray:
-        import line_profiler
-        worker_info = torch.utils.data.get_worker_info()
-        worker_id = worker_info.id if worker_info is not None else 0
-        profiler = line_profiler.LineProfiler()
+        key = path_rel
+        if key in self.mem_cache:
+            try:
+                self.mem_cache_order.remove(key)
+            except ValueError:
+                pass
+            self.mem_cache_order.append(key)
+            return self.mem_cache[key]
+        cached = self.disk_cache.ensure(path_rel)
         
-        def tmp():
-            key = path_rel
-            if key in self.mem_cache:
-                try:
-                    self.mem_cache_order.remove(key)
-                except ValueError:
-                    pass
-                self.mem_cache_order.append(key)
-                return self.mem_cache[key]
-            cached = self.disk_cache.ensure(path_rel)
-            
-            arr = np.load(cached, mmap_mode='r' if self.mmap else None)
-            if self.mem_cache_budget > 0:
-                self.mem_cache[key] = arr
-                self.mem_cache_order.append(key)
-                used = sum(self.mem_cache[k].nbytes for k in self.mem_cache)
-                while used > self.mem_cache_budget and self.mem_cache_order:
-                    old = self.mem_cache_order.pop(0)
-                    used -= self.mem_cache[old].nbytes
-                    del self.mem_cache[old]
-            return arr
-        
-        result = profiler(tmp)()
-        # 保存
-        profiler.dump_stats(f"lineprofile_worker{worker_id}.lprof")
-        return result
-        
-
+        arr = np.load(cached, mmap_mode='r' if self.mmap else None)
+        if self.mem_cache_budget > 0:
+            self.mem_cache[key] = arr
+            self.mem_cache_order.append(key)
+            used = sum(self.mem_cache[k].nbytes for k in self.mem_cache)
+            while used > self.mem_cache_budget and self.mem_cache_order:
+                old = self.mem_cache_order.pop(0)
+                used -= self.mem_cache[old].nbytes
+                del self.mem_cache[old]
+        return arr
 
 # ------------------------------------------------------------
 # Sampler
