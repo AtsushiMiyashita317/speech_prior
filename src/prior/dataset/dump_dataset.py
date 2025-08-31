@@ -229,10 +229,6 @@ class DumpDataset(torch.utils.data.Dataset):
             schema_row = self.schema.get((mid, layer), {})
             ref = FeatureRef(
                 path=row['dump_path_rel'],
-                T=row.get('T'),
-                D=row.get('D', None),
-                fps=int(row['fps']) if row.get('fps') is not None else int(schema_row.get('fps', 0)),
-                arch=row.get('arch', schema_row.get('arch', '')),
                 frontend=row.get('frontend', schema_row.get('frontend')),
             )
             self.join_map.setdefault(uid, {}).setdefault(mid, {})[layer] = ref
@@ -315,7 +311,7 @@ class DumpDataset(torch.utils.data.Dataset):
         }
 
         # features (full)
-        features: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        features: Dict[str, Dict[str, Any]] = {}
         lengths_frames: Dict[str, int] = {}
         models = self.join_map[uid]
         for mid, layers in self.layers_by_model.items():
@@ -324,7 +320,7 @@ class DumpDataset(torch.utils.data.Dataset):
                     raise KeyError(f"missing model {mid} for utterance {uid}")
                 else:
                     continue
-            features[mid] = {}
+            features_list = []
             for ly in layers:
                 ref = models[mid].get(ly)
                 if ref is None:
@@ -334,12 +330,15 @@ class DumpDataset(torch.utils.data.Dataset):
                         continue
                 npy = self._load_feature(ref.path)
                 arr = torch.from_numpy(npy)  # [T, D]
-                features[mid][ly] = {
-                    'feature': arr,
-                    'lengths': arr.shape[0],
-                    'fps': ref.fps,
-                }
-                lengths_frames[mid] = arr.shape[0]
+                features_list.append(arr)
+            
+            feature = torch.cat(features_list, dim=-1)
+            features[mid] = {
+                'feature': feature,
+                'lengths': feature.shape[0],
+                'fps': ref.fps,
+            }
+            lengths_frames[mid] = feature.shape[0]
 
         meta = {
             'sample_id': uid,
@@ -449,40 +448,36 @@ def collate_nested_batch(batch: List[Dict[str, Any]], pad_value: float = 0.0) ->
         batch_wave[i, :wf.shape[0]].copy_(wf)
 
     # features
-    features_out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    features_out: Dict[str, Dict[str, Any]] = {}
     frames_out: Dict[str, List[int]] = {}
     all_models = set()
-    all_layers: Dict[str, set] = {}
     for b in batch:
         for mid, L in b['features'].items():
             all_models.add(mid)
-            all_layers.setdefault(mid, set()).update(L.keys())
     for mid in sorted(all_models):
-        features_out[mid] = {}
-        for ly in sorted(all_layers[mid]):
-            seqs = []
-            lens = []
-            fps = None
-            for b in batch:
-                x_dict = b['features'].get(mid, {}).get(ly)
-                if x_dict is not None:
-                    x = x_dict['feature']
-                    D = x.shape[1]
-                    lens.append(x.shape[0])
-                    seqs.append(x)
-                    if fps is None:
-                        fps = x_dict.get('fps', None)
-            Tmax = max(lens) if lens else 0
-            feature = torch.zeros((len(seqs), Tmax, D), dtype=torch.float32)
-            for i, x in enumerate(seqs):
-                feature[i, :x.shape[0], :].copy_(x)
-                
-            features_out[mid][ly] = {
-                'feature': feature,
-                'lengths': torch.tensor(lens, dtype=torch.long),
-                'fps': fps,
-            }
-            frames_out[mid] = lens
+        seqs = []
+        lens = []
+        fps = None
+        for b in batch:
+            x_dict = b['features'].get(mid)
+            if x_dict is not None:
+                x = x_dict['feature']
+                D = x.shape[1]
+                lens.append(x.shape[0])
+                seqs.append(x)
+                if fps is None:
+                    fps = x_dict.get('fps', None)
+        Tmax = max(lens) if lens else 0
+        feature = torch.zeros((len(seqs), Tmax, D), dtype=torch.float32)
+        for i, x in enumerate(seqs):
+            feature[i, :x.shape[0], :].copy_(x)
+            
+        features_out[mid] = {
+            'feature': feature,
+            'lengths': torch.tensor(lens, dtype=torch.long),
+            'fps': fps,
+        }
+        frames_out[mid] = lens
 
     meta_list = [b['meta'] for b in batch]
 

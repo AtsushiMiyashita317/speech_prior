@@ -6,6 +6,7 @@ import polars as pl
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+import torchaudio
 
 def find_utt_dirs(dumps_root):
     # dumps/**/<utt_id> ディレクトリを再帰的に探索
@@ -18,11 +19,10 @@ def find_utt_dirs(dumps_root):
                 utt_dirs.append(utt_path)
     return utt_dirs
 
-def process_utt_dir(utt_dir, dumps_root, dataset_root):
+def process_utt_dir(utt_dir, raw_root, dumps_root, dataset_root):  
     # utt_id ディレクトリ内の全npyをロードし、(T, D_total)に連結
     npy_files = sorted(glob.glob(os.path.join(utt_dir, "*.npy")))
     arrays = []
-    meta = {}
     col_start = 0
     features_records = []
     for fpath in npy_files:
@@ -30,17 +30,20 @@ def process_utt_dir(utt_dir, dumps_root, dataset_root):
         arrays.append(arr)
         D = arr.shape[1]
         key = os.path.splitext(os.path.basename(fpath))[0]  # <model>.<layer>
-        meta[key] = (col_start, col_start + D)
+        start = col_start
+        end = col_start + D
         col_start += D
         model, layer = key.split('.', 1)
         features_records.append({
             "model": model,
             "layer": layer,
             "D": D,
+            "start": start,
+            "end": end
         })
     T = arrays[0].shape[0]
     for arr in arrays:
-        assert arr.shape[0] == T, f"T mismatch in {utt_dir}"
+        assert arr.shape[0] == T, f"T mismatch in {utt_dir}, shapes: {[a.shape for a in arrays]}"
     data = np.concatenate(arrays, axis=1)  # (T, D_total)
 
     # dataset/**/<utt_id>.h5 のパスを決定
@@ -50,14 +53,23 @@ def process_utt_dir(utt_dir, dumps_root, dataset_root):
     utt_id = os.path.basename(utt_dir)
     out_path = os.path.join(out_dir, f"{utt_id}.h5")
 
-    # h5ファイルに保存
-    with h5py.File(out_path, "w") as f:
-        f.create_dataset("features", data=data)
-        meta_grp = f.create_group("meta")
-        for key, (start, end) in meta.items():
-            meta_grp.attrs[key] = [start, end]
-
     rel_utt_dir = os.path.relpath(utt_dir, dumps_root)
+    
+    wav_path = os.path.join(raw_root, rel_utt_dir + ".flac")
+    wav, sr = torchaudio.load(wav_path)
+    if wav.ndim == 2:
+        if wav.shape[0] == 1:
+            wav = wav[0]
+        else:
+            wav = wav.mean(dim=0)
+    wav = wav.numpy().astype(np.float16)
+    
+    with h5py.File(out_path, "w") as f:
+        group = f.create_group("utterance")
+        group.create_dataset("waveform", data=wav)
+        group.create_dataset("features", data=data)
+
+    
     utterance_record = {
         "utt_id": utt_id,
         "T": T,
@@ -67,8 +79,9 @@ def process_utt_dir(utt_dir, dumps_root, dataset_root):
 
 def main():
     parser = argparse.ArgumentParser(description="Create h5 files and features/utterance parquet from dumps directory.")
+    parser.add_argument("--raw_root", type=str, default="data/librispeech/LibriSpeech", help="Path to raw directory")
     parser.add_argument("--dumps_root", type=str, default="dumps", help="Path to dumps directory")
-    parser.add_argument("--dataset_root", type=str, default="dataset", help="Path to output dataset directory")
+    parser.add_argument("--dataset_root", type=str, default="datasets", help="Path to output dataset directory")
     parser.add_argument("--features_parquet", type=str, default="features.parquet", help="Output features parquet file")
     parser.add_argument("--utterance_parquet", type=str, default="utterance.parquet", help="Output utterance parquet file")
     args = parser.parse_args()
@@ -78,7 +91,7 @@ def main():
     utterance_records = []
     seen_features = set()
     def wrapper(utt_dir):
-        return process_utt_dir(utt_dir, args.dumps_root, args.dataset_root)
+        return process_utt_dir(utt_dir, args.raw_root, args.dumps_root, args.dataset_root)
     with ThreadPoolExecutor() as executor:
         results = list(tqdm(executor.map(wrapper, utt_dirs), total=len(utt_dirs), desc="Processing utt_dirs"))
     for features, utterance in results:

@@ -20,6 +20,8 @@ from transformers import (
     WhisperModel, WhisperProcessor
 )
 
+MAX_LEN = 1500
+
 # ---------- utils ----------
 
 def load_audio(path: Path, target_sr=16000):
@@ -119,6 +121,13 @@ def dump_one_file(
     device: torch.device,
     overwrite: bool,
 ):
+    # 音声
+    wav, sr = load_audio(wav_path)
+    num_samples = len(wav)
+    ssl_len = ssl_effective_lengths(num_samples)
+    if ssl_len > MAX_LEN:
+        return {"status": "skip", "path": str(wav_path)}
+    
     # 出力ディレクトリ計算
     audio_rel = wav_path.resolve().relative_to(input_dir)
 
@@ -138,11 +147,6 @@ def dump_one_file(
             targets = [f"blocks.{lid*3}" for lid in layer_ids]
         if targets and all(out_npy(t).exists() for t in targets):
             return {"status": "skip", "path": str(wav_path)}
-
-    # 音声
-    wav, sr = load_audio(wav_path)
-    num_samples = len(wav)
-    ssl_len = ssl_effective_lengths(num_samples)
 
     if arch in ["hubert", "wavlm", "wav2vec"]:
         inputs = processor(wav, sampling_rate=sr, return_tensors="pt")
@@ -220,7 +224,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_dir", required=True)
     ap.add_argument("--outdir", default="dumps")
-    ap.add_argument("--arch", choices=["hubert","wavlm","wav2vec","whisper","xvector","raw"], default="wav2vec")
+    ap.add_argument("--arch", choices=["hubert","wavlm","wav2vec","whisper","xvector"], default="wav2vec")
     ap.add_argument("--model", default="facebook/wav2vec2-base")
     ap.add_argument("--layers", default="6,9,11", help="ssl/whisper: 0始まりの層番号(カンマ区切り)")
     ap.add_argument("--device", choices=["cuda","cpu"], default="cuda")

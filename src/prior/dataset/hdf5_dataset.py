@@ -4,9 +4,14 @@ import polars as pl
 import numpy as np
 import threading
 import shutil
-from typing import Tuple
+from typing import Tuple, List, Dict, Any
 import torch
 import torchaudio
+
+try:
+    profile
+except NameError:
+    def profile(func): return func
 
 
 def _async_copy(src, dst):
@@ -36,6 +41,7 @@ class DiskLRU:
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
 
+    @profile
     def ensure(self, relpath: str) -> str:
         """Ensure file is present in cache. Return cached absolute path (or original if disabled)."""
         abspath = os.path.join(self.base_dir, relpath)
@@ -78,25 +84,39 @@ class HDF5Dataset:
             for row in self.utterance_df.iter_rows(named=True)
         }
         self.utt_ids = list(self.hdf5_paths.keys())
+        
+        self.feature_range = {}
+        for row in self.features_df.iter_rows(named=True):
+            model = row["model"]
+            layer = row["layer"]
+            start = row["start"]
+            end = row["end"]
+            if model not in self.feature_range:
+                self.feature_range[model] = {}
+            self.feature_range[model][layer] = (start, end)
 
         self.D_total = 0
         for row in self.features_df.iter_rows(named=True):
             self.D_total += row["D"]
+            
+        self.utt_lens = [row["T"] for row in self.utterance_df.iter_rows(named=True)]
 
     def __len__(self):
         return len(self.utt_ids)
 
+    @profile
     def __getitem__(self, idx):
         utt_id = self.utt_ids[idx]
-        raw_path = self.cache.ensure(self.raw_paths[utt_id])
-        wave, _ = self._load_waveform(raw_path)
+        # raw_path = self.cache.ensure(self.raw_paths[utt_id])
+        # wave, _ = self._load_waveform(raw_path)
 
-
+        T = self.utt_lens[idx]
         h5_path = self.cache.ensure(self.hdf5_paths[utt_id])
-        features = self._load_hdf5(h5_path)
+        wave, features = self._load_hdf5(h5_path, T)
 
         return wave, features
 
+    @profile
     def _load_waveform(self, path: str) -> Tuple[torch.Tensor, int]:
         wav, sr = torchaudio.load(path)  # [C, S]
         if wav.ndim == 2:
@@ -104,32 +124,31 @@ class HDF5Dataset:
                 wav = wav[0]
             else:
                 wav = wav.mean(dim=0)
-        return wav.to(self.dtype), int(sr)
+        return wav, int(sr)
 
-    def _load_hdf5(self, h5_path):
+    @profile
+    def _load_hdf5(self, h5_path, T):
         with h5py.File(h5_path, "r") as f:
-            meta = dict(f["meta"].attrs)
-            dataset = f["features"]
-            T = dataset.shape[0]
-            if self.model_layers is None:
-                features = dataset[:]
-            else:
-                features = np.empty((T, self.D_total), order='C')
-                # model_layers: {model: [layer, ...], ...}
-                offset = 0
-                for key, rng in meta.items():
-                    model, layer = key.split('.', 1)
-                    if model in self.model_layers and layer in self.model_layers[model]:
-                        start, end = rng
-                        width = end - start
-                        dataset.read_direct(
-                            features, 
-                            src_sel=np.s_[ :, start:end],
-                            dest_sel=np.s_[ :, offset:offset+width]
-                        )
-                        offset += width
+            group = f["utterance"]
+            features = group["features"][:]
+            waveform = group["waveform"][:]
+            # if self.model_layers is None:
+            #     features = dataset[:]
+            # else:
+            #     features = np.empty((T, self.D_total), order='C')
+            #     # model_layers: {model: [layer, ...], ...}
+            #     offset = 0
+            #     for model, layers in self.model_layers.items():
+            #         for layer in layers:
+            #             start, end = self.feature_range[model][str(layer)]
+            #             width = end - start
+            #             dataset.read_direct(
+            #                 features,
+            #                 source_sel=np.s_[ :, start:end],
+            #                 dest_sel=np.s_[ :, offset:offset+width])
+            #             offset += width
 
-        return torch.from_numpy(features)
+        return torch.from_numpy(waveform), torch.from_numpy(features)
 
     def get_feature_info(self, model, layer):
         # features.parquetからD次元数など取得
@@ -142,3 +161,27 @@ class HDF5Dataset:
         # utterance.parquetからTやパス取得
         df = self.utterance_df.filter(pl.col("utt_id") == utt_id)
         return df
+
+@profile
+def collate_batch(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pad/stack Dataset samples into a batch dict.
+
+    - wave -> [B, S_max]
+    - features -> [B, T_max, D]
+    """
+
+    B = len(batch)
+    # audio
+    s_lens = [b[0].shape[0] for b in batch]
+    f_lens = [b[1].shape[0] for b in batch]
+    Smax = max(s_lens)
+    Fmax = max(f_lens)
+    D = batch[0][1].shape[1]
+    batch_wave = torch.zeros((B, Smax))
+    batch_feature = torch.zeros((B, Fmax, D))
+    for i, b in enumerate(batch):
+        wave, features = b
+        batch_wave[i, :wave.shape[0]].copy_(wave)
+        batch_feature[i, :features.shape[0], :].copy_(features)
+
+    return batch_wave, batch_feature
