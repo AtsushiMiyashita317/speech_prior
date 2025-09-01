@@ -10,7 +10,6 @@ class HDF5Dataset:
     def __init__(
         self,
         base_dir,
-        raw_dir,
         hdf5_dir,
         cache_dir,
         budget_bytes,
@@ -24,10 +23,6 @@ class HDF5Dataset:
         self.model_layers = model_layers
         self.cache = DiskLRU(base_dir, cache_dir, budget_bytes)
 
-        self.raw_paths = {
-            row["utt_id"]: os.path.join(raw_dir, row["path"] + ".flac")
-            for row in self.utterance_df.iter_rows(named=True)
-        }
         self.hdf5_paths = {
             row["utt_id"]: os.path.join(hdf5_dir, row["path"] + ".h5")
             for row in self.utterance_df.iter_rows(named=True)
@@ -55,8 +50,6 @@ class HDF5Dataset:
 
     def __getitem__(self, idx):
         utt_id = self.utt_ids[idx]
-        # raw_path = self.cache.ensure(self.raw_paths[utt_id])
-        # wave, _ = self._load_waveform(raw_path)
 
         T = self.utt_lens[idx]
         h5_path = self.cache.ensure(self.hdf5_paths[utt_id])
@@ -64,35 +57,12 @@ class HDF5Dataset:
 
         return wave, features
 
-    def _load_waveform(self, path: str) -> tuple[torch.Tensor, int]:
-        wav, sr = torchaudio.load(path)  # [C, S]
-        if wav.ndim == 2:
-            if wav.shape[0] == 1:
-                wav = wav[0]
-            else:
-                wav = wav.mean(dim=0)
-        return wav, int(sr)
-
     def _load_hdf5(self, h5_path, T):
         with h5py.File(h5_path, "r") as f:
             group = f["utterance"]
             features = group["features"][:]
             waveform = group["waveform"][:]
-            # if self.model_layers is None:
-            #     features = dataset[:]
-            # else:
-            #     features = np.empty((T, self.D_total), order='C')
-            #     # model_layers: {model: [layer, ...], ...}
-            #     offset = 0
-            #     for model, layers in self.model_layers.items():
-            #         for layer in layers:
-            #             start, end = self.feature_range[model][str(layer)]
-            #             width = end - start
-            #             dataset.read_direct(
-            #                 features,
-            #                 source_sel=np.s_[ :, start:end],
-            #                 dest_sel=np.s_[ :, offset:offset+width])
-            #             offset += width
+            # TODO subset access
 
         return torch.from_numpy(waveform), torch.from_numpy(features)
 
