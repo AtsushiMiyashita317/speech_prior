@@ -1,13 +1,258 @@
 import argparse
-
+import os
 import torch
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 from transformers import Wav2Vec2Config, Wav2Vec2Model, get_linear_schedule_with_warmup
+from matplotlib import pyplot as plt
+import wandb
 
 from prior.dataset.hdf5_dataset import HDF5Dataset
-from prior.utils.data import SeriesCollator, RandomFoldedLengthBatchSampler
-from prior.nn.functional import series_covariance, series_product, series_covariance_mask
+from prior.utils.data import SeriesCollator, FoldedLengthBatchSampler
+from prior.nn.functional import series_covariance, series_covariance_mask
 from prior.nn.model.cnn1d import CNN1dKernel
+
+
+def forward_one_step(
+    batch, model, prototype, device
+):
+    wave, teacher, wave_mask, teacher_mask = batch
+    teacher = teacher.to(device)
+    b = wave.size(0)
+    n = 80 // b
+    cov_teacher = series_covariance(teacher, n)
+    wave = wave.to(device)
+    wave_mask = wave_mask.to(device)
+    feature = model.module.forward(wave, attention_mask=wave_mask).last_hidden_state
+    cov_mask = series_covariance_mask(teacher_mask.to(device), n)
+    cov_feature = series_covariance(feature, n)
+    cov_feature = cov_feature * cov_mask
+    kernel = torch.stack([cov_feature, cov_feature], dim=-1)
+    ntk = prototype.module.forward(kernel).select(-1, 1)
+    x = ntk.masked_select(cov_mask)
+    y = cov_teacher.masked_select(cov_mask) + 1.0
+    loss = torch.nn.functional.mse_loss(x, y)
+    return x, y, ntk, cov_teacher, loss
+
+
+def train_one_epoch(
+    train_dataloader,
+    model, prototype,
+    optimizer,
+    scheduler,
+    device,
+    rank,
+    pbar,
+):
+    for batch_idx, batch in enumerate(train_dataloader):
+        x, y, _, _, loss = forward_one_step(batch, model, prototype, device)
+
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()
+
+        if rank == 0:
+            wandb.log({"train/loss": loss.item()})
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix(
+                    loss=loss.item(),
+                )
+
+    if rank == 0 and pbar:
+        pbar.reset()
+
+@torch.no_grad()
+def plot(batch, model, prototype, device, epoch=None):
+    _, _, x, y, _ = forward_one_step(batch, model, prototype, device)
+
+    x = x.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
+    y = y.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
+
+    min_val = min(x.min().item(), y.min().item())
+    max_val = max(x.max().item(), y.max().item())
+
+    fig, ax = plt.subplots(2, 1, figsize=(6, 6))
+    lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val)
+    ax[0].set_title("Predicted")
+    ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val)
+    ax[1].set_title("Target")
+    fig.colorbar(lx, ax=ax[0])
+    fig.colorbar(ly, ax=ax[1])
+
+    plt.tight_layout()
+
+    # wandb 画像記録
+    if epoch is not None:
+        wandb.log({"plot": wandb.Image(fig)})
+    plt.close(fig)
+
+@torch.no_grad()
+def validate(
+    valid_dataloader,
+    model, prototype,
+    device,
+    rank,
+    pbar,
+):
+    loss_list = []
+    for batch_idx, batch in enumerate(valid_dataloader):
+        _, _, _, _, loss = forward_one_step(batch, model, prototype, device)
+        loss_list.append(loss.item())
+        if rank == 0:
+            wandb.log({"valid/loss": loss.item()})
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix(
+                    loss=loss.item(),
+                )
+
+    if rank == 0 and pbar:
+        pbar.reset()
+
+    loss_avg = sum(loss_list) / len(loss_list)
+    if rank == 0:
+        wandb.log({"valid/loss_avg": loss_avg})
+    return loss_avg
+
+    
+
+def main_worker(rank, world_size, args):
+    # DDP setup
+    os.environ['MASTER_ADDR'] = args.master_addr
+    os.environ['MASTER_PORT'] = args.master_port
+    dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=world_size)
+
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+
+    if rank == 0:
+        wandb.init(project="speech_prior", config=vars(args))
+
+    train_dataset = HDF5Dataset(
+        args.base_dir,
+        args.hdf5_dir,
+        args.features_parquet,
+        args.utterance_parquet,
+        cache_dir=args.cache_dir,
+        budget_bytes=6 << 40,
+        subset_list=["train-clean-100"],
+        stats_path="stats/train-clean-100.npz",
+    )
+
+    valid_dataset = HDF5Dataset(
+        args.base_dir,
+        args.hdf5_dir,
+        args.features_parquet,
+        args.utterance_parquet,
+        cache_dir=args.cache_dir,
+        budget_bytes=6 << 40,
+        subset_list=["dev-clean"],
+        stats_path="stats/dev-clean.npz",
+    )
+
+    train_sampler = FoldedLengthBatchSampler(
+        train_dataset.utt_lens,
+        args.batch_bins,
+        args.num_folds,
+        shuffle=True,
+        num_replicas=world_size,
+        rank=rank
+    )
+
+    valid_sampler = FoldedLengthBatchSampler(
+        valid_dataset.utt_lens,
+        args.batch_bins,
+        args.num_folds,
+        shuffle=False,
+        num_replicas=world_size,
+        rank=rank
+    )
+
+    collator = SeriesCollator(args.hop_length)
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_sampler=train_sampler,
+        collate_fn=collator.collate_batch,
+        num_workers=args.num_workers,
+        pin_memory=False,
+        persistent_workers=True,
+    )
+
+    valid_dataloader = torch.utils.data.DataLoader(
+        valid_dataset,
+        batch_sampler=valid_sampler,
+        collate_fn=collator.collate_batch,
+        num_workers=args.num_workers,
+        pin_memory=False,
+        persistent_workers=True,
+    )
+
+    config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
+    model = Wav2Vec2Model(config)
+    model.train()
+    prototype = CNN1dKernel(num_layers=3, kernel_size=5)
+
+    model.to(device)
+    prototype.to(device)
+    model = DDP(model, device_ids=[rank] if torch.cuda.is_available() else None)
+    prototype = DDP(prototype, device_ids=[rank] if torch.cuda.is_available() else None)
+
+    optimizer = torch.optim.AdamW(list(model.parameters()) + list(prototype.parameters()), lr=1e-4, weight_decay=0.01)
+
+    num_epochs = args.num_epochs
+    num_training_steps = num_epochs * len(train_dataloader)
+    num_warmup_steps = int(0.1 * num_training_steps)
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps
+    )
+
+    if rank == 0:
+        print("\nオプティマイザとスケジューラを設定しました。")
+        print("Optimizer:", optimizer.__class__.__name__)
+        print("Scheduler:", scheduler.__class__.__name__)
+
+    train_pbar = tqdm(total=len(train_dataloader)) if rank == 0 else None
+    valid_pbar = tqdm(total=len(valid_dataloader)) if rank == 0 else None
+    for epoch in range(num_epochs):
+        train_sampler.set_epoch(epoch)
+        train_one_epoch(
+            train_dataloader,
+            model,
+            prototype,
+            optimizer,
+            scheduler,
+            device,
+            train_pbar,
+        )
+
+        if epoch % 10 == 0:
+            model.eval()
+            prototype.eval()
+            validate(
+                valid_dataloader,
+                model,
+                prototype,
+                device,
+                rank=rank,
+                pbar=valid_pbar,
+            )
+
+            if rank == 0:
+                batch = next(iter(valid_dataloader))
+                plot(batch, model, prototype, device)
+
+            model.train()
+            prototype.train()
+
+    if rank == 0:
+        wandb.finish()
+    dist.destroy_process_group()
 
 
 def main():
@@ -20,130 +265,14 @@ def main():
     parser.add_argument("--batch_bins", type=int, default=4000)
     parser.add_argument("--num_folds", type=int, default=64)
     parser.add_argument("--hop_length", type=int, default=320)
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument("--world_size", type=int, default=torch.cuda.device_count() if torch.cuda.is_available() else 1)
+    parser.add_argument("--master_addr", type=str, default="localhost")
+    parser.add_argument("--master_port", type=str, default="12355")
 
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    world_size = args.world_size
+    mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
 
-    train_dataset = HDF5Dataset(
-        args.base_dir,
-        args.hdf5_dir,
-        args.features_parquet,
-        args.utterance_parquet,
-        cache_dir=args.cache_dir,
-        budget_bytes=6 << 40,
-        subset_list=["dev-clean"],
-        stats_path="stats/dev-clean.npz",
-    )
-
-    sampler = RandomFoldedLengthBatchSampler(
-        train_dataset.utt_lens,
-        args.batch_bins,
-        args.num_folds
-    )
-    collator = SeriesCollator(args.hop_length)
-
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_sampler=sampler,
-        collate_fn=collator.collate_batch,
-        num_workers=40,
-        pin_memory=False,
-        persistent_workers=True,
-    )
-
-    # --- 1. モデルアーキテクチャの定義 ---
-    # "facebook/wav2vec2-base" の設定（アーキテクチャ）を読み込む
-    # これにより、重みは読み込まずに構造だけを定義できる
-    config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
-
-    # ランダムな重みでモデルを初期化
-    model = Wav2Vec2Model(config)
-
-    # モデルを学習モードにする
-    model.train()
-
-    prototype = CNN1dKernel(num_layers=3, kernel_size=5)
-
-    print("モデルの準備ができました:", model.__class__.__name__)
-
-    # --- 3. オプティマイザとスケジューラの設定 ---
-    # AdamWオプティマイザを設定
-    optimizer = torch.optim.AdamW(list(model.parameters()) + list(prototype.parameters()), lr=1e-4, weight_decay=0.01)
-
-    num_epochs = 10
-    num_training_steps = num_epochs * len(train_dataloader)
-    # ウォームアップのステップ数 (例: 総ステップの10%)
-    num_warmup_steps = int(0.1 * num_training_steps)
-
-    # ウォームアップ付き線形減衰スケジューラ
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=num_training_steps
-    )
-
-    print("\nオプティマイザとスケジューラを設定しました。")
-    print("Optimizer:", optimizer.__class__.__name__)
-    print("Scheduler:", scheduler.__class__.__name__)
-
-    model.to(device)
-    prototype.to(device)
-    pbar1 = tqdm(total=num_epochs)
-    pbar2 = tqdm(total=len(train_dataloader))
-    for epoch in range(num_epochs):
-        sampler.set_epoch(epoch)
-        for batch in tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{num_epochs}"):
-            wave, teacher, wave_mask, teacher_mask = batch
-            teacher = teacher.to(device)
-            b = wave.size(0)
-            n = 80 // b
-            # mean_teacher = teacher.mean(dim=-1)
-            cov_teacher = series_covariance(teacher, n)
-            wave = wave.to(device)
-            wave_mask = wave_mask.to(device)
-            feature = model.forward(wave, attention_mask=wave_mask).last_hidden_state
-            
-            # mean_pred = feature.select(-1, 0)
-            # feature = feature.narrow(-1, 1, feature.size(-1)-1)
-            
-            # cov_teacher = cov_teacher - series_product(mean_pred.detach(), n) + 0.3
-            
-            cov_mask = series_covariance_mask(teacher_mask.to(device), n)
-            cov_feature = series_covariance(feature, n)
-            cov_feature = cov_feature * cov_mask
-            
-            kernel = torch.stack([cov_feature, cov_feature], dim=-1)
-            ntk = prototype.forward(kernel).select(-1, 1)
-
-            x = ntk.masked_select(cov_mask)
-            y = cov_teacher.masked_select(cov_mask) + 1.0
-            # z = mean_pred.masked_select(teacher_mask.ge(0.5).to(device))
-            # w = mean_teacher.masked_select(teacher_mask.ge(0.5).to(device))
-            
-            x_mean = x.mean().item()
-            x_std = x.std().item()
-            x_min = x.min().item()
-            y_mean = y.mean().item()
-            y_std = y.std().item()
-            y_min = y.min().item()
-
-            loss = torch.nn.functional.mse_loss(x, y)
-            # loss = loss + torch.nn.functional.mse_loss(z, w)
-
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-
-            pbar2.update(1)
-            pbar2.set_postfix(
-                loss=loss.item(),
-                x_mean=x_mean, x_std=x_std, x_min=x_min,
-                y_mean=y_mean, y_std=y_std, y_min=y_min
-            )
-        pbar2.reset()
-        pbar1.update(1)
-        
-if __name__ == "__main__":
-    main()

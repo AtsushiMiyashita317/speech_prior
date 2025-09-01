@@ -2,12 +2,13 @@ import random
 from torch.utils.data import Sampler
 
 
-class RandomFoldedLengthBatchSampler(Sampler):
+class FoldedLengthBatchSampler(Sampler):
     def __init__(
         self, 
         length_list,
         batch_bins,
         num_folds,
+        shuffle=True,
         num_replicas=1,
         rank=0,
         seed=42,
@@ -15,6 +16,7 @@ class RandomFoldedLengthBatchSampler(Sampler):
         self.length_list = length_list
         self.batch_bins = batch_bins
         self.num_folds = num_folds
+        self.shuffle = shuffle
         self.num_replicas = num_replicas
         self.rank = rank
         self.epoch = 0
@@ -25,7 +27,8 @@ class RandomFoldedLengthBatchSampler(Sampler):
     def create_batch_indices(self):
         random.seed(self.seed + self.epoch)
         shuffled_indices = list(range(len(self.length_list)))
-        random.shuffle(shuffled_indices)
+        if self.shuffle:
+            random.shuffle(shuffled_indices)
         folds = []
         for i in range(self.num_folds):
             fold_indices = shuffled_indices[i::self.num_folds]
@@ -56,8 +59,11 @@ class RandomFoldedLengthBatchSampler(Sampler):
 
         n = len(batch_indices)
         lack = (self.num_replicas - n % self.num_replicas) % self.num_replicas
-        batch_indices.extend(random.choices(batch_indices, k=lack))
-        random.shuffle(batch_indices)
+        if self.shuffle:
+            batch_indices.extend(random.choices(batch_indices, k=lack))
+            random.shuffle(batch_indices)
+        else:
+            batch_indices.extend(batch_indices[:lack])
         self.batch_indices = batch_indices[self.rank::self.num_replicas]
 
     def __iter__(self):
