@@ -7,6 +7,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import torchaudio
+from pathlib import Path
 
 def find_utt_dirs(dumps_root):
     # dumps/**/<utt_id> ディレクトリを再帰的に探索
@@ -54,6 +55,7 @@ def process_utt_dir(utt_dir, raw_root, dumps_root, dataset_root):
     out_path = os.path.join(out_dir, f"{utt_id}.h5")
 
     rel_utt_dir = os.path.relpath(utt_dir, dumps_root)
+    subset = Path(rel_utt_dir).parts[0]
     
     wav_path = os.path.join(raw_root, rel_utt_dir + ".flac")
     wav, sr = torchaudio.load(wav_path)
@@ -72,6 +74,7 @@ def process_utt_dir(utt_dir, raw_root, dumps_root, dataset_root):
     
     utterance_record = {
         "utt_id": utt_id,
+        "subset": subset,
         "T": T,
         "path": rel_utt_dir
     }

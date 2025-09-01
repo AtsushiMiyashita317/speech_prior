@@ -26,7 +26,7 @@ class SeriesCollator:
         for i, b in enumerate(batch):
             wave, features = b
             f = features.shape[0]
-            offset_f = random.randint(0, Fmax - f)
+            offset_f = random.randint(0, max(0, Fmax - f - 1))
             offset_s = offset_f * self.hop_length
             batch_wave[i, offset_s:offset_s + wave.shape[0]].copy_(wave)
             batch_feature[i, offset_f:offset_f + features.shape[0], :].copy_(features)

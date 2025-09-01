@@ -71,10 +71,17 @@ class CNN1dNetwork(network.NetworkModule):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_layer.forward(x)
-        for layer in self.hidden_layers.modules():
+        for layer in self.hidden_layers:
             x = layer.forward(x)
         x = self.output_layer.forward(x)
         return x
+    
+    def regularizer(self) -> torch.Tensor:
+        reg = self.input_layer.regularizer()
+        for layer in self.hidden_layers:
+            reg = reg + layer.regularizer()
+        reg = reg + self.output_layer.regularizer()
+        return reg
 
 
 class CNN1dKernel(kernel.KernelModule):
@@ -108,7 +115,7 @@ class CNN1dKernel(kernel.KernelModule):
 
     def forward(self, k: torch.Tensor) -> torch.Tensor:
         k = self.input_layer.forward(k)
-        for layer in self.hidden_layers.modules():
+        for layer in self.hidden_layers:
             k = layer.forward(k)
         k = self.output_layer.forward(k)
         return k

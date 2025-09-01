@@ -170,7 +170,7 @@ class Conv1d(KernelModule):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.nn.init.constant_(self.alpha, 2.0 / math.sqrt(self.kernel_size))
+        torch.nn.init.constant_(self.alpha, 2.0 / self.kernel_size)
         if self.beta is not None:
             torch.nn.init.constant_(self.beta, 0.0)
     
@@ -186,10 +186,9 @@ class Conv1d(KernelModule):
         k_gp, k_ntk = k.select(-1, 0), k.select(-1, 1)                  # (b0, b1, n, t)
         B, N, T = k_gp.size(0), k_gp.size(-2), k_gp.size(-1)
 
-        v = k_gp.diagonal(dim1=0,dim2=1)                                # (b, n, t)   
+        v = k_gp.diagonal(dim1=0,dim2=1).permute(2, 0, 1)               # (b, n, t)   
         v = v.select(-2, 0)                                             # (b, t)    
         v = torch.nn.functional.pad(v, (0, N-1), value=0)
-
         v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(-2)            # (b, 1, 1, t)
         v_yy = torch.as_strided(
             v,

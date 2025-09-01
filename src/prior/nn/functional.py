@@ -19,27 +19,43 @@ def covariance_heaviside(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Te
 
 def series_covariance(x: torch.Tensor, n: int) -> torch.Tensor:
     """
-        x: (b, c, t)
-        index: (n,)  n is the number of lags
+        x: (b, t, c)
         return: (b, b, n, t)
     """
-    B, C, T = x.size(0), x.size(-2), x.size(-1)
+    B, T, C = x.size(0), x.size(-2), x.size(-1)
 
-    x = torch.nn.functional.pad(x, (0, n-1))  # (b, c, t)
+    x = torch.nn.functional.pad(x, (0, 0, 0, n-1))  # (b, t, c)
     x_strided = torch.as_strided(
         x,
-        size=(B, C, n, T),
-        stride=(x.stride(0), x.stride(1), x.stride(2), x.stride(2)),
+        size=(B, T, n, C),
+        stride=(x.stride(0), x.stride(1), x.stride(1), x.stride(2)),
         storage_offset=0
     )
-    k = torch.einsum('act,bcnt->abnt', x.narrow(-1, 0, T), x_strided) / math.sqrt(C)  # (b0, b1, n, t)
+    k = torch.einsum('atc,btnc->abnt', x.narrow(-2, 0, T), x_strided) / C  # (b0, b1, n, t)
 
     return k
+
+def series_product(x: torch.Tensor, n: int) -> torch.Tensor:
+    """
+        x: (b, t)
+        return: (b, b, n, t)
+    """
+    B, T = x.size(0), x.size(-1)
+
+    x = torch.nn.functional.pad(x, (0, n-1))  # (b, t)
+    x_strided = torch.as_strided(
+        x,
+        size=(1, B, n, T),
+        stride=(0, x.stride(0), x.stride(1), x.stride(1)),
+        storage_offset=0
+    )
+    p = x.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1) * x_strided  # (b0, b1, n, t)
+
+    return p
 
 def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
     """
         mask: (b, t)
-        index: (n,)  n is the number of lags
         return: (b, b, n, t)
     """
     B, T = mask.size(0), mask.size(-1)
@@ -53,4 +69,4 @@ def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
     )
     k_mask = mask.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1) * mask_strided  # (b, b, n, t)
 
-    return k_mask
+    return k_mask.ge(0.5)
