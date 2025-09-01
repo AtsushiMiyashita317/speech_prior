@@ -97,34 +97,45 @@ def validate(
     device,
     rank,
     pbar,
+    world_size,
 ):
     loss_list = []
+    first_batch = None
     for batch_idx, batch in enumerate(valid_dataloader):
+        if rank == 0 and first_batch is None:
+            first_batch = batch
         _, _, _, _, loss = forward_one_step(batch, model, prototype, device)
-        loss_list.append(loss.item())
+        
+        # Gather losses from all processes
+        loss_tensor = torch.tensor([loss.item()], device=device)
+        gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+        dist.all_gather(gathered_losses, loss_tensor)
+
         if rank == 0:
-            wandb.log({"valid/loss": loss.item()})
+            # Extend list with losses from all processes
+            for l in gathered_losses:
+                loss_list.append(l.item())
             if pbar:
                 pbar.update(1)
-                pbar.set_postfix(
-                    loss=loss.item(),
-                )
 
     if rank == 0 and pbar:
         pbar.reset()
 
-    loss_avg = sum(loss_list) / len(loss_list)
+    loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
     if rank == 0:
         wandb.log({"valid/loss_avg": loss_avg})
-    return loss_avg
+    return loss_avg, first_batch
 
     
 
 def main_worker(rank, world_size, args):
+    print(f"[main_worker] rank={rank}, world_size={world_size}")
     # DDP setup
     os.environ['MASTER_ADDR'] = args.master_addr
     os.environ['MASTER_PORT'] = args.master_port
     dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo", rank=rank, world_size=world_size)
+
+    print(f"[main_worker] DDP initialized on rank={rank}")
 
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
@@ -228,24 +239,25 @@ def main_worker(rank, world_size, args):
             optimizer,
             scheduler,
             device,
+            rank,
             train_pbar,
         )
 
         if epoch % 10 == 0:
             model.eval()
             prototype.eval()
-            validate(
+            loss_avg, plot_batch = validate(
                 valid_dataloader,
                 model,
                 prototype,
                 device,
                 rank=rank,
                 pbar=valid_pbar,
+                world_size=world_size,
             )
 
-            if rank == 0:
-                batch = next(iter(valid_dataloader))
-                plot(batch, model, prototype, device)
+            if rank == 0 and plot_batch is not None:
+                plot(plot_batch, model, prototype, device, epoch)
 
             model.train()
             prototype.train()
