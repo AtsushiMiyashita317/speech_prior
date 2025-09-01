@@ -1,5 +1,6 @@
-data
-dumps
+./data
+./dumps
+./datasets
 venv
 notebooks
 
