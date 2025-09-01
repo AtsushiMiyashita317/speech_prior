@@ -1,134 +1,133 @@
 import argparse
 import os
-import torch
 import torch.multiprocessing as mp
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from tqdm import tqdm
-from transformers import Wav2Vec2Config, Wav2Vec2Model, get_linear_schedule_with_warmup
-from matplotlib import pyplot as plt
-import wandb
 
-from prior.dataset.hdf5_dataset import HDF5Dataset
-from prior.utils.data import SeriesCollator, FoldedLengthBatchSampler
-from prior.nn.functional import series_covariance, series_covariance_mask
-from prior.nn.model.cnn1d import CNN1dKernel
-
-
-def forward_one_step(
-    batch, model, prototype, device
-):
-    wave, teacher, wave_mask, teacher_mask = batch
-    teacher = teacher.to(device)
-    b = wave.size(0)
-    n = 80 // b
-    cov_teacher = series_covariance(teacher, n)
-    wave = wave.to(device)
-    wave_mask = wave_mask.to(device)
-    feature = model.module.forward(wave, attention_mask=wave_mask).last_hidden_state
-    cov_mask = series_covariance_mask(teacher_mask.to(device), n)
-    cov_feature = series_covariance(feature, n)
-    cov_feature = cov_feature * cov_mask
-    kernel = torch.stack([cov_feature, cov_feature], dim=-1)
-    ntk = prototype.module.forward(kernel).select(-1, 1)
-    x = ntk.masked_select(cov_mask)
-    y = cov_teacher.masked_select(cov_mask) + 1.0
-    loss = torch.nn.functional.mse_loss(x, y)
-    return x, y, ntk, cov_teacher, loss
-
-
-def train_one_epoch(
-    train_dataloader,
-    model, prototype,
-    optimizer,
-    scheduler,
-    device,
-    rank,
-    pbar,
-):
-    for batch_idx, batch in enumerate(train_dataloader):
-        x, y, _, _, loss = forward_one_step(batch, model, prototype, device)
-
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
-
-        if rank == 0:
-            wandb.log({"train/loss": loss.item()})
-            if pbar:
-                pbar.update(1)
-                pbar.set_postfix(
-                    loss=loss.item(),
-                )
-
-    if rank == 0 and pbar:
-        pbar.reset()
-
-@torch.no_grad()
-def plot(batch, model, prototype, device, epoch=None):
-    _, _, x, y, _ = forward_one_step(batch, model, prototype, device)
-
-    x = x.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
-    y = y.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
-
-    min_val = min(x.min().item(), y.min().item())
-    max_val = max(x.max().item(), y.max().item())
-
-    fig, ax = plt.subplots(2, 1, figsize=(6, 6))
-    lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val)
-    ax[0].set_title("Predicted")
-    ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val)
-    ax[1].set_title("Target")
-    fig.colorbar(lx, ax=ax[0])
-    fig.colorbar(ly, ax=ax[1])
-
-    plt.tight_layout()
-
-    # wandb 画像記録
-    if epoch is not None:
-        wandb.log({"plot": wandb.Image(fig)})
-    plt.close(fig)
-
-@torch.no_grad()
-def validate(
-    valid_dataloader,
-    model, prototype,
-    device,
-    rank,
-    pbar,
-    world_size,
-):
-    loss_list = []
-    first_batch = None
-    for batch_idx, batch in enumerate(valid_dataloader):
-        if rank == 0 and first_batch is None:
-            first_batch = batch
-        _, _, _, _, loss = forward_one_step(batch, model, prototype, device)
-        
-        # Gather losses from all processes
-        loss_tensor = torch.tensor([loss.item()], device=device)
-        gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
-        dist.all_gather(gathered_losses, loss_tensor)
-
-        if rank == 0:
-            # Extend list with losses from all processes
-            for l in gathered_losses:
-                loss_list.append(l.item())
-            if pbar:
-                pbar.update(1)
-
-    if rank == 0 and pbar:
-        pbar.reset()
-
-    loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
-    if rank == 0:
-        wandb.log({"valid/loss_avg": loss_avg})
-    return loss_avg, first_batch
-
-    
 
 def main_worker(rank, world_size, args):
+    import torch
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    from tqdm import tqdm
+    from transformers import Wav2Vec2Config, Wav2Vec2Model, get_linear_schedule_with_warmup
+    from matplotlib import pyplot as plt
+    import wandb
+
+    from prior.dataset.hdf5_dataset import HDF5Dataset
+    from prior.utils.data import SeriesCollator, FoldedLengthBatchSampler
+    from prior.nn.functional import series_covariance, series_covariance_mask
+    from prior.nn.model.cnn1d import CNN1dKernel
+
+    def forward_one_step(
+        batch, model, prototype, device
+    ):
+        wave, teacher, wave_mask, teacher_mask = batch
+        teacher = teacher.to(device)
+        b = wave.size(0)
+        n = 80 // b
+        cov_teacher = series_covariance(teacher, n)
+        wave = wave.to(device)
+        wave_mask = wave_mask.to(device)
+        feature = model.module.forward(wave, attention_mask=wave_mask).last_hidden_state
+        cov_mask = series_covariance_mask(teacher_mask.to(device), n)
+        cov_feature = series_covariance(feature, n)
+        cov_feature = cov_feature * cov_mask
+        kernel = torch.stack([cov_feature, cov_feature], dim=-1)
+        ntk = prototype.module.forward(kernel).select(-1, 1)
+        x = ntk.masked_select(cov_mask)
+        y = cov_teacher.masked_select(cov_mask) + 1.0
+        loss = torch.nn.functional.mse_loss(x, y)
+        return x, y, ntk, cov_teacher, loss
+
+
+    def train_one_epoch(
+        train_dataloader,
+        model, prototype,
+        optimizer,
+        scheduler,
+        device,
+        rank,
+        pbar,
+    ):
+        for batch_idx, batch in enumerate(train_dataloader):
+            x, y, _, _, loss = forward_one_step(batch, model, prototype, device)
+
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+            if rank == 0:
+                wandb.log({"train/loss": loss.item()})
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix(
+                        loss=loss.item(),
+                    )
+
+        if rank == 0 and pbar:
+            pbar.reset()
+
+    @torch.no_grad()
+    def plot(batch, model, prototype, device, epoch=None):
+        _, _, x, y, _ = forward_one_step(batch, model, prototype, device)
+
+        x = x.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
+        y = y.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
+
+        min_val = min(x.min().item(), y.min().item())
+        max_val = max(x.max().item(), y.max().item())
+
+        fig, ax = plt.subplots(2, 1, figsize=(6, 6))
+        lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val)
+        ax[0].set_title("Predicted")
+        ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val)
+        ax[1].set_title("Target")
+        fig.colorbar(lx, ax=ax[0])
+        fig.colorbar(ly, ax=ax[1])
+
+        plt.tight_layout()
+
+        # wandb 画像記録
+        if epoch is not None:
+            wandb.log({"plot": wandb.Image(fig)})
+        plt.close(fig)
+
+    @torch.no_grad()
+    def validate(
+        valid_dataloader,
+        model, prototype,
+        device,
+        rank,
+        pbar,
+        world_size,
+    ):
+        loss_list = []
+        first_batch = None
+        for batch_idx, batch in enumerate(valid_dataloader):
+            if rank == 0 and first_batch is None:
+                first_batch = batch
+            _, _, _, _, loss = forward_one_step(batch, model, prototype, device)
+            
+            # Gather losses from all processes
+            loss_tensor = torch.tensor([loss.item()], device=device)
+            gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            dist.all_gather(gathered_losses, loss_tensor)
+
+            if rank == 0:
+                # Extend list with losses from all processes
+                for l in gathered_losses:
+                    loss_list.append(l.item())
+                if pbar:
+                    pbar.update(1)
+
+        if rank == 0 and pbar:
+            pbar.reset()
+
+        loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
+        if rank == 0:
+            wandb.log({"valid/loss_avg": loss_avg})
+        return loss_avg, first_batch
+
     print(f"[main_worker] rank={rank}, world_size={world_size}")
     # DDP setup
     os.environ['MASTER_ADDR'] = args.master_addr
@@ -268,6 +267,7 @@ def main_worker(rank, world_size, args):
 
 
 def main():
+    import torch
     parser = argparse.ArgumentParser(description="Train a Wav2Vec2 model with custom dataset")
     parser.add_argument("--base_dir", type=str, default="./")
     parser.add_argument("--hdf5_dir", type=str, default="./datasets")
@@ -279,13 +279,17 @@ def main():
     parser.add_argument("--hop_length", type=int, default=320)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--num_epochs", type=int, default=10)
-    parser.add_argument("--world_size", type=int, default=torch.cuda.device_count() if torch.cuda.is_available() else 1)
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="12355")
 
     args = parser.parse_args()
 
-    world_size = args.world_size
+    world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    
+    if world_size == 0 and torch.cuda.is_available():
+        print("Warning: CUDA is available, but world_size is 0. Did you mean to use CPUs?")
+        world_size = 1 # Fallback to 1 process on CPU
+
     mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
 
 if __name__ == "__main__":
