@@ -1,62 +1,10 @@
 import os
-import math
 import h5py
 import polars as pl
-import numpy as np
-import threading
-import shutil
-from typing import Tuple, List, Dict, Any
 import torch
 import torchaudio
 
-try:
-    profile
-except NameError:
-    def profile(func): return func
-    
-
-def _async_copy(src, dst):
-    def _copy():
-        try:
-            shutil.copy2(src, dst)
-        except Exception:
-            with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
-                shutil.copyfileobj(fsrc, fdst)
-    t = threading.Thread(target=_copy)
-    t.start()
-
-# ------------------------------------------------------------
-# Disk LRU Cache (simple)
-# ------------------------------------------------------------
-class DiskLRU:
-    """Very simple disk LRU cache for files.
-
-    Files are identified by original absolute path; cached path is under cache_dir/aa/bb/<sha>.
-    Eviction is by total size (approximate, bytes).
-    """
-
-    def __init__(self, base_dir: str, cache_dir: str, budget_bytes: int = 0) -> None:
-        self.base_dir = base_dir
-        self.cache_dir = cache_dir
-        self.budget = int(budget_bytes) if cache_dir else 0
-        if self.cache_dir:
-            os.makedirs(self.cache_dir, exist_ok=True)
-
-    @profile
-    def ensure(self, relpath: str) -> str:
-        """Ensure file is present in cache. Return cached absolute path (or original if disabled)."""
-        abspath = os.path.join(self.base_dir, relpath)
-        if not self.budget or not self.cache_dir:
-            return abspath
-        dst = os.path.join(self.cache_dir, relpath)
-        if os.path.exists(dst):
-            return dst
-
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        _async_copy(abspath, dst)
-
-        return abspath
-
+from prior.utils.data import DiskLRU
 
 class HDF5Dataset:
     def __init__(
@@ -105,7 +53,6 @@ class HDF5Dataset:
     def __len__(self):
         return len(self.utt_ids)
 
-    @profile
     def __getitem__(self, idx):
         utt_id = self.utt_ids[idx]
         # raw_path = self.cache.ensure(self.raw_paths[utt_id])
@@ -117,8 +64,7 @@ class HDF5Dataset:
 
         return wave, features
 
-    @profile
-    def _load_waveform(self, path: str) -> Tuple[torch.Tensor, int]:
+    def _load_waveform(self, path: str) -> tuple[torch.Tensor, int]:
         wav, sr = torchaudio.load(path)  # [C, S]
         if wav.ndim == 2:
             if wav.shape[0] == 1:
@@ -127,7 +73,6 @@ class HDF5Dataset:
                 wav = wav.mean(dim=0)
         return wav, int(sr)
 
-    @profile
     def _load_hdf5(self, h5_path, T):
         with h5py.File(h5_path, "r") as f:
             group = f["utterance"]
@@ -163,26 +108,3 @@ class HDF5Dataset:
         df = self.utterance_df.filter(pl.col("utt_id") == utt_id)
         return df
 
-@profile
-def collate_batch(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Pad/stack Dataset samples into a batch dict.
-
-    - wave -> [B, S_max]
-    - features -> [B, T_max, D]
-    """
-
-    B = len(batch)
-    # audio
-    s_lens = [b[0].shape[0] for b in batch]
-    f_lens = [b[1].shape[0] for b in batch]
-    Smax = max(s_lens)
-    Fmax = max(f_lens)
-    D = batch[0][1].shape[1]
-    batch_wave = torch.zeros((B, Smax))
-    batch_feature = torch.zeros((B, Fmax, D))
-    for i, b in enumerate(batch):
-        wave, features = b
-        batch_wave[i, :wave.shape[0]].copy_(wave)
-        batch_feature[i, :features.shape[0], :].copy_(features)
-
-    return batch_wave, batch_feature
