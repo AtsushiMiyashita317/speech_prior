@@ -53,8 +53,8 @@ class PrototypeMLP(PosteriorModule):
         self.output_layer.network()
         super().network()
 
-    def forward_kernel(self, x: torch.Tensor) -> torch.Tensor:
-        k = self.input_layer.forward_kernel(x)
+    def forward_kernel(self, k: torch.Tensor) -> torch.Tensor:
+        k = self.input_layer.forward_kernel(k)
         for layer in self.hidden_layers.modules():
             k = layer.forward_kernel(k)
         k = self.output_layer.forward_kernel(k)
@@ -105,7 +105,7 @@ class PrototypeCNN1d(PosteriorModule):
                 in_channels=hidden_channels,
                 out_channels=hidden_channels,
                 kernel_size=kernel_size,
-                padding=kernel_size // 2,
+                padding='same',
                 bias=True,
             ) for _ in range(hidden_layers)
         ])
@@ -113,7 +113,7 @@ class PrototypeCNN1d(PosteriorModule):
             in_channels=hidden_channels,
             out_channels=output_channels,
             kernel_size=kernel_size,
-            padding=kernel_size // 2,
+            padding='same',
             bias=True,
             last_layer=True
         )
@@ -132,11 +132,11 @@ class PrototypeCNN1d(PosteriorModule):
         self.output_layer.network()
         super().network()
 
-    def forward_kernel(self, x: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
-        k = self.input_layer.forward_kernel(x, index=index)
+    def forward_kernel(self, k: torch.Tensor) -> torch.Tensor:
+        k = self.input_layer.forward_kernel(k)
         for layer in self.hidden_layers.modules():
-            k = layer.forward_kernel(k, index=index)
-        k = self.output_layer.forward_kernel(k, index=index)
+            k = layer.forward_kernel(k)
+        k = self.output_layer.forward_kernel(k)
         return k
     
     def forward_value(self, x: torch.Tensor) -> torch.Tensor:

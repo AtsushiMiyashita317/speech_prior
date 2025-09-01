@@ -4,7 +4,7 @@ from typing import Iterable
 
 import torch
 
-from prior.nn.functional import calculate_statistics, covariance_heaviside, covariance_relu, series_covariance
+from prior.nn.functional import calculate_statistics, covariance_heaviside, covariance_relu
 
 
 class Mode(enum.IntEnum):
