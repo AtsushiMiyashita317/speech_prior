@@ -14,8 +14,6 @@ try:
 except NameError:
     def profile(func): return func
     
-from prior.nn.functional import series_covariance
-
 
 def _async_copy(src, dst):
     def _copy():
