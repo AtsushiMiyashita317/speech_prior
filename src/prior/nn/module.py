@@ -34,8 +34,8 @@ class PosteriorModule(torch.nn.Module):
     def forward_value(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("This method should be overridden by subclasses.")
     
-    def forward(self, input: torch.Tensor, **kwargs) -> torch.Tensor:
-        return self.forward_value(input, **kwargs)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return self.forward_value(input)
         
     def regularizer(self) -> torch.Tensor:
         return 0.0
@@ -141,14 +141,10 @@ class Embedding(PosteriorModule):
         elif self.stage == Mode.NETWORK:
             return [self.weight] + ([self.bias] if self.bias is not None else [])
 
-    def forward_kernel(self, x: torch.Tensor) -> torch.Tensor:
-        k_gp = x @ x.T / self.in_features
-        k_gp = k_gp * self.alpha.abs()
-        k_ntk = k_gp.clone()
+    def forward_kernel(self, k: torch.Tensor) -> torch.Tensor:
+        k = k * self.alpha.abs()
         if self.beta is not None:
-            k_gp = k_gp + self.beta.abs()
-            k_ntk = k_ntk + self.beta.abs()
-        k = torch.stack([k_gp, k_ntk], dim=-1)
+            k = k + self.beta.abs()
         return k
 
     def forward_value(self, x: torch.Tensor) -> torch.Tensor:
@@ -348,38 +344,19 @@ class SeriesEmbedding(PosteriorModule):
         elif self.stage == Mode.NETWORK:
             return [self.weight] + ([self.bias] if self.bias is not None else [])
 
-    def forward_kernel(self, x: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+    def forward_kernel(self, k: torch.Tensor) -> torch.Tensor:
         """Forward pass for the kernel.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (b, c, t).
-            index (torch.Tensor): Index tensor of shape (n-1,).
+            k (torch.Tensor): Input tensor of shape (b0, b1, n, t, 2).
 
         Returns:
             torch.Tensor: Output tensor of shape (b0, b1, n, t, 2).
         """
-        B, C, T = x.size(0), x.size(-2), x.size(-1)
-        N = index.size(0) + 1
-
-        pad_size = index.max().item()
-        x_paded = torch.nn.functional.pad(x, (0, pad_size))  # (b, c, t)
-        x_paded = x_paded.unsqueeze(-2).expand(-1, -1, N, -1)  # (b, c, n, t)
-
-        t = torch.arange(T, device=index.device, dtype=index.dtype)
-        index = torch.nn.functional.pad(index, (1, 0), value=0)     # (n,)
-        index = index.unsqueeze(1) + t.unsqueeze(0)  # (n, t)
-        index = index.unsqueeze(0).unsqueeze(0).expand(B, C, -1, -1)  # (b, c, n, t)
-
-        x0 = x
-        x1 = torch.gather(x_paded, -1, index).narrow(-1, 0, T)  # (b, c, n, t)
-
-        k = torch.einsum('act,bcnt->abnt', x0, x1) / math.sqrt(C)  # (b0, b1, n, t)
 
         k = k * self.alpha.abs()
         if self.beta is not None:
             k = k + self.beta.abs()
-
-        k = torch.stack([k, k], dim=-1)
 
         return k
 
@@ -502,12 +479,11 @@ class Conv1d(PosteriorModule):
         elif self.stage == Mode.NETWORK:
             return [self.weight] + ([self.bias] if self.bias is not None else [])
 
-    def forward_kernel(self, k: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
+    def forward_kernel(self, k: torch.Tensor) -> torch.Tensor:
         """Forward pass for the kernel.
 
         Args:
             k (torch.Tensor): Input tensor of shape (b0, b1, n, t, 2).
-            index (torch.Tensor): Index tensor of shape (n-1,).
 
         Returns:
             torch.Tensor: Output tensor of shape (b0, b1, n, t, 2).
@@ -517,19 +493,14 @@ class Conv1d(PosteriorModule):
 
         v = k_gp.diagonal(dim1=0,dim2=1)                                # (b, n, t)   
         v = v.select(-2, 0)                                             # (b, t)    
+        v = torch.nn.functional.pad(v, (0, N-1), value=0)
 
-        t = torch.arange(v.size(-1), device=index.device)               # (t,)
-        index = torch.nn.functional.pad(index, (1, 0), value=0)         # (n,)
-        index = index.unsqueeze(1) + t.unsqueeze(0)                     # (n, t)
-        index = index.unsqueeze(0).expand(B, -1, -1)                    # (b, n, t)
-
-        pad_size = index.max().item()
-        v_padded = torch.nn.functional.pad(v, (0, pad_size), value=0)
-        v_padded = v_padded.unsqueeze(1).expand(-1, N, -1)              # (b, n, t)
-
-        v_xx = v.unsqueeze(1).unsqueeze(-2)                             # (b, 1, 1, t)
-        v_yy = torch.gather(v_padded, -1, index)                        # (b, n, t)
-        v_yy = v_yy.narrow(-1, 0, T).unsqueeze(0)                       # (1, b, n, t)
+        v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(-2)            # (b, 1, 1, t)
+        v_yy = torch.as_strided(
+            v,
+            size=(1, B, N, T),
+            stride=(0, v.stride(0), v.stride(1), v.stride(1))
+        )
         v_xy = k_gp                                                     # (b0, b1, n, t)
 
         rho, std_x, std_y = calculate_statistics(v_xx, v_yy, v_xy)      # (b0, b1, n, t)
