@@ -1,23 +1,23 @@
 import torch
 import math
 
-def calculate_statistics(v_xx, v_yy, v_xy, eps=1e-10):
+def calculate_statistics(v_xx: torch.Tensor, v_yy: torch.Tensor, v_xy: torch.Tensor, eps=1e-10) -> torch.Tensor:
     std_x = torch.sqrt(torch.clamp(v_xx, min=eps))
     std_y = torch.sqrt(torch.clamp(v_yy, min=eps))
     rho = v_xy / std_x / std_y
     return rho, std_x, std_y
 
-def covariance_relu(rho, std_x, std_y):
+def covariance_relu(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
     theta = torch.arccos(torch.clamp(rho, -0.9999, 0.9999))
     c = torch.sin(theta) + (torch.pi - theta) * torch.cos(theta)
     return c * std_x * std_y / (2*torch.pi)
 
-def covariance_heaviside(rho, std_x, std_y):
+def covariance_heaviside(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
     theta = torch.arccos(torch.clamp(rho, -0.9999, 0.9999))
     c = 0.5 - theta / (2*torch.pi)
     return c
 
-def series_covariance(x: torch.Tensor, n: int):
+def series_covariance(x: torch.Tensor, n: int) -> torch.Tensor:
     """
         x: (b, c, t)
         index: (n,)  n is the number of lags
@@ -36,7 +36,7 @@ def series_covariance(x: torch.Tensor, n: int):
 
     return k
 
-def series_covariance_mask(mask: torch.Tensor, n: int):
+def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
     """
         mask: (b, t)
         index: (n,)  n is the number of lags
