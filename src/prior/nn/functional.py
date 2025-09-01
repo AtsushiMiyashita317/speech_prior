@@ -26,14 +26,31 @@ def series_covariance(x: torch.Tensor, n: int):
     B, C, T = x.size(0), x.size(-2), x.size(-1)
 
     x = torch.nn.functional.pad(x, (0, n-1))  # (b, c, t)
-
     x_strided = torch.as_strided(
         x,
         size=(B, C, n, T),
         stride=(x.stride(0), x.stride(1), x.stride(2), x.stride(2)),
         storage_offset=0
     )
-
     k = torch.einsum('act,bcnt->abnt', x.narrow(-1, 0, T), x_strided) / math.sqrt(C)  # (b0, b1, n, t)
-    
+
     return k
+
+def series_covariance_mask(mask: torch.Tensor, n: int):
+    """
+        mask: (b, t)
+        index: (n,)  n is the number of lags
+        return: (b, b, n, t)
+    """
+    B, T = mask.size(0), mask.size(-1)
+
+    mask = torch.nn.functional.pad(mask, (0, n-1))  # (b, t)
+    mask_strided = torch.as_strided(
+        mask,
+        size=(1, B, n, T),
+        stride=(0, mask.stride(0), mask.stride(1), mask.stride(1)),
+        storage_offset=0
+    )
+    k_mask = mask.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1) * mask_strided  # (b, b, n, t)
+
+    return k_mask
