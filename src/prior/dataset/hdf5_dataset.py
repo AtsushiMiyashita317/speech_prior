@@ -1,4 +1,5 @@
 import os
+import math
 import h5py
 import polars as pl
 import numpy as np
@@ -12,6 +13,8 @@ try:
     profile
 except NameError:
     def profile(func): return func
+    
+from prior.nn.functional import series_covariance
 
 
 def _async_copy(src, dst):

@@ -2,7 +2,7 @@ import random
 from torch.utils.data import Sampler
 
 
-class RandomFoldedLengthSampler(Sampler):
+class RandomFoldedLengthBatchSampler(Sampler):
     def __init__(
         self, 
         length_list,
@@ -44,6 +44,8 @@ class RandomFoldedLengthSampler(Sampler):
                     break
                 batch_indices.append(fold[seek:seek + batch_size])
                 seek += batch_size
+                if seek >= len(fold):
+                    break
         
         seek = 0
         while seek < len(rest_indices):
