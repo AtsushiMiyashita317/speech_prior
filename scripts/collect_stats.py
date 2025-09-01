@@ -1,6 +1,8 @@
 
 import argparse
 import numpy as np
+from tqdm import tqdm
+
 from src.prior.dataset.hdf5_dataset import HDF5Dataset
 
 def main():
@@ -25,7 +27,7 @@ def main():
     total_count = 0
 
     # 走査して合計・二乗和・総数を集計
-    for i in range(len(dataset)):
+    for i in tqdm(range(len(dataset))):
         _, features = dataset[i]  # features: (T, D)
         features_np = features.numpy()
         if sum_ is None:
