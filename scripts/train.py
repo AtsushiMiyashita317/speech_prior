@@ -288,3 +288,6 @@ def main():
     world_size = args.world_size
     mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
 
+if __name__ == "__main__":
+    main()
+
