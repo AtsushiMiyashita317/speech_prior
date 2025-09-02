@@ -70,3 +70,29 @@ def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
     k_mask = mask.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1) * mask_strided  # (b, b, n, t)
 
     return k_mask.ge(0.5)
+
+def series_correlation(k: torch.Tensor) -> torch.Tensor:
+    """Forward pass for the kernel.
+
+    Args:
+        k (torch.Tensor): Input tensor of shape (b0, b1, n, t).
+
+    Returns:
+        torch.Tensor: Output tensor of shape (b0, b1, n, t).
+    """
+    B, N, T = k.size(0), k.size(-2), k.size(-1)
+
+    v = k.diagonal(dim1=0,dim2=1).permute(2, 0, 1)               # (b, n, t)   
+    v = v.select(-2, 0)                                             # (b, t)    
+    v = torch.nn.functional.pad(v, (0, N-1), value=0)
+    v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(-2)            # (b, 1, 1, t)
+    v_yy = torch.as_strided(
+        v,
+        size=(1, B, N, T),
+        stride=(0, v.stride(0), v.stride(1), v.stride(1))
+    )
+    v_xy = k                                                     # (b0, b1, n, t)
+
+    rho, std_x, std_y = calculate_statistics(v_xx, v_yy, v_xy)      # (b0, b1, n, t)
+    
+    return rho

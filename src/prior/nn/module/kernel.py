@@ -161,7 +161,10 @@ class Conv1d(KernelModule):
         self.padding = padding
         self.dilation = dilation
 
-        self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 2.0 / math.sqrt(kernel_size)))
+        if last_layer:
+            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 1.0 / math.sqrt(kernel_size)))
+        else:
+            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 2.0 / math.sqrt(kernel_size)))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))
@@ -170,7 +173,10 @@ class Conv1d(KernelModule):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.nn.init.constant_(self.alpha, 2.0 / self.kernel_size)
+        if self.last_layer:
+            torch.nn.init.constant_(self.alpha, 1.0 / self.kernel_size)
+        else:
+            torch.nn.init.constant_(self.alpha, 2.0 / self.kernel_size)
         if self.beta is not None:
             torch.nn.init.constant_(self.beta, 0.0)
     

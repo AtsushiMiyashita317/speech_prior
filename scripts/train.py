@@ -14,39 +14,40 @@ def main_worker(rank, world_size, args):
 
     from prior.dataset.hdf5_dataset import HDF5Dataset
     from prior.utils.data import SeriesCollator, FoldedLengthBatchSampler
-    from prior.nn.functional import series_covariance, series_covariance_mask
+    from prior.nn.functional import series_covariance, series_covariance_mask, series_correlation
     from prior.nn.model.cnn1d import CNN1dKernel
+    from prior.nn.model.feature_extractor import BothsidePaddedWav2Vec2Model
 
     def forward_one_step(
         batch, model, prototype, device
     ):
         wave, teacher, wave_mask, teacher_mask = batch
-        teacher = teacher.to(device)
         b = wave.size(0)
-        n = 80 // b
-        cov_teacher = series_covariance(teacher, n)
-        wave = wave.to(device)
-        wave_mask = wave_mask.to(device)
-        feature = model.module.forward(wave, attention_mask=wave_mask).last_hidden_state
+        n = 256 // b
+        cov_teacher = series_covariance(teacher.to(device), n)
+        feature = model.module.forward(
+            wave.to(device), 
+            attention_mask=wave_mask.to(device)
+        ).last_hidden_state
+        feature = feature * teacher_mask.to(device).unsqueeze(-1)
         cov_mask = series_covariance_mask(teacher_mask.to(device), n)
         cov_feature = series_covariance(feature, n)
         cov_feature = cov_feature * cov_mask
-        kernel = torch.stack([cov_feature, cov_feature], dim=-1)
-        ntk = prototype.module.forward(kernel).select(-1, 1)
-        x = ntk.masked_select(cov_mask)
-        y = cov_teacher.masked_select(cov_mask) + 1.0
+        cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
+        cov_feature = prototype.module.forward(cov_feature).select(-1, 1)
+        cor_feature = series_correlation(cov_feature)
+        cor_teacher = series_correlation(cov_teacher)
+        x = cor_feature.masked_select(cov_mask)
+        y = cor_teacher.masked_select(cov_mask)
         loss = torch.nn.functional.mse_loss(x, y)
-        return x, y, ntk, cov_teacher, loss
+        return x, y, cor_feature, cor_teacher, loss
 
 
     def train_one_epoch(
         train_dataloader,
-        model, prototype,
-        optimizer,
-        scheduler,
-        device,
-        rank,
-        pbar,
+        model, prototype, 
+        optimizer, scheduler,
+        device, rank, pbar,
     ):
         for batch_idx, batch in enumerate(train_dataloader):
             x, y, _, _, loss = forward_one_step(batch, model, prototype, device)
@@ -62,6 +63,10 @@ def main_worker(rank, world_size, args):
                     pbar.update(1)
                     pbar.set_postfix(
                         loss=loss.item(),
+                        x_mean=x.mean().item(),
+                        x_std=x.std().item(),
+                        y_mean=y.mean().item(),
+                        y_std=y.std().item(),
                     )
 
         if rank == 0 and pbar:
@@ -71,16 +76,18 @@ def main_worker(rank, world_size, args):
     def plot(batch, model, prototype, device, epoch=None):
         _, _, x, y, _ = forward_one_step(batch, model, prototype, device)
 
-        x = x.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
-        y = y.permute(0, 3, 1, 2).flatten(0, 1).flatten(-2, -1).T
+        x = x.flatten(0, 2)
+        y = y.flatten(0, 2)
 
-        min_val = min(x.min().item(), y.min().item())
-        max_val = max(x.max().item(), y.max().item())
+        # min_val = min(x.min().item(), y.min().item())
+        # max_val = max(x.max().item(), y.max().item())
+        min_val = -1
+        max_val = 1
 
-        fig, ax = plt.subplots(2, 1, figsize=(6, 6))
-        lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val)
+        fig, ax = plt.subplots(1, 2, figsize=(10, 6))
+        lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val, aspect='auto')
         ax[0].set_title("Predicted")
-        ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val)
+        ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val, aspect='auto')
         ax[1].set_title("Target")
         fig.colorbar(lx, ax=ax[0])
         fig.colorbar(ly, ax=ax[1])
@@ -95,11 +102,8 @@ def main_worker(rank, world_size, args):
     @torch.no_grad()
     def validate(
         valid_dataloader,
-        model, prototype,
-        device,
-        rank,
-        pbar,
-        world_size,
+        model, prototype, 
+        device, rank, pbar, world_size,
     ):
         loss_list = []
         first_batch = None
@@ -127,7 +131,7 @@ def main_worker(rank, world_size, args):
         if rank == 0:
             wandb.log({"valid/loss_avg": loss_avg})
         return loss_avg, first_batch
-
+    
     print(f"[main_worker] rank={rank}, world_size={world_size}")
     # DDP setup
     os.environ['MASTER_ADDR'] = args.master_addr
@@ -140,6 +144,11 @@ def main_worker(rank, world_size, args):
 
     if rank == 0:
         wandb.init(project="speech_prior", config=vars(args))
+        # wandbの実行ディレクトリ内にチェックポイント用のフォルダを作成
+        checkpoint_dir = os.path.join(wandb.run.dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+    else:
+        checkpoint_dir = None
 
     train_dataset = HDF5Dataset(
         args.base_dir,
@@ -181,28 +190,29 @@ def main_worker(rank, world_size, args):
         rank=rank
     )
 
-    collator = SeriesCollator(args.hop_length)
+    train_collator = SeriesCollator(args.hop_length, pad_bothside=True)
+    valid_collator = SeriesCollator(args.hop_length, pad_bothside=False)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_sampler=train_sampler,
-        collate_fn=collator.collate_batch,
+        collate_fn=train_collator.collate_batch,
         num_workers=args.num_workers,
         pin_memory=False,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
     valid_dataloader = torch.utils.data.DataLoader(
         valid_dataset,
         batch_sampler=valid_sampler,
-        collate_fn=collator.collate_batch,
+        collate_fn=valid_collator.collate_batch,
         num_workers=args.num_workers,
         pin_memory=False,
-        persistent_workers=True,
+        persistent_workers=False,
     )
 
     config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
-    model = Wav2Vec2Model(config)
+    model = BothsidePaddedWav2Vec2Model(config)
     model.train()
     prototype = CNN1dKernel(num_layers=3, kernel_size=5)
 
@@ -231,6 +241,9 @@ def main_worker(rank, world_size, args):
     valid_pbar = tqdm(total=len(valid_dataloader)) if rank == 0 else None
     for epoch in range(num_epochs):
         train_sampler.set_epoch(epoch)
+        model.train()
+        prototype.train()
+        
         train_one_epoch(
             train_dataloader,
             model,
@@ -242,25 +255,34 @@ def main_worker(rank, world_size, args):
             train_pbar,
         )
 
-        if epoch % 10 == 0:
-            model.eval()
-            prototype.eval()
-            loss_avg, plot_batch = validate(
-                valid_dataloader,
-                model,
-                prototype,
-                device,
-                rank=rank,
-                pbar=valid_pbar,
-                world_size=world_size,
-            )
+        model.eval()
+        prototype.eval()
+        loss_avg, plot_batch = validate(
+            valid_dataloader,
+            model,
+            prototype,
+            device,
+            rank=rank,
+            pbar=valid_pbar,
+            world_size=world_size,
+        )
+        if rank == 0 and plot_batch is not None:
+            plot(plot_batch, model, prototype, device, epoch)
+        
 
-            if rank == 0 and plot_batch is not None:
-                plot(plot_batch, model, prototype, device, epoch)
-
-            model.train()
-            prototype.train()
-
+        if epoch % 10 == 0 and rank == 0:
+            # チェックポイントの保存 (rank 0 のみ)
+            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.module.state_dict(),
+                'prototype_state_dict': prototype.module.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'loss': loss_avg,
+            }, checkpoint_path)
+            print(f"Checkpoint saved to {checkpoint_path}")
+                
     if rank == 0:
         wandb.finish()
     dist.destroy_process_group()
@@ -274,11 +296,11 @@ def main():
     parser.add_argument("--features_parquet", type=str, default="features.parquet")
     parser.add_argument("--utterance_parquet", type=str, default="utterance.parquet")
     parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument("--batch_bins", type=int, default=4000)
+    parser.add_argument("--batch_bins", type=int, default=8000)
     parser.add_argument("--num_folds", type=int, default=64)
     parser.add_argument("--hop_length", type=int, default=320)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--num_epochs", type=int, default=10)
+    parser.add_argument("--num_epochs", type=int, default=1000)
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="12355")
 
