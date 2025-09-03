@@ -14,7 +14,13 @@ def main_worker(rank, world_size, args):
 
     from prior.dataset.hdf5_dataset import HDF5Dataset
     from prior.utils.data import SeriesCollator, FoldedLengthBatchSampler
-    from prior.nn.functional import series_covariance, series_covariance_mask, series_correlation
+    from prior.nn.functional import (
+        series_covariance, 
+        series_covariance_mask, 
+        series_correlation, 
+        series_variance,
+        kld_gaussian
+    )
     from prior.nn.model.cnn1d import CNN1dKernel
     from prior.nn.model.feature_extractor import BothsidePaddedWav2Vec2Model
 
@@ -22,6 +28,7 @@ def main_worker(rank, world_size, args):
         batch, model, prototype, device
     ):
         wave, teacher, wave_mask, teacher_mask = batch
+        teacher_mask = teacher_mask.to(device)
         b = wave.size(0)
         n = 256 // b
         cov_teacher = series_covariance(teacher.to(device), n)
@@ -29,18 +36,29 @@ def main_worker(rank, world_size, args):
             wave.to(device), 
             attention_mask=wave_mask.to(device)
         ).last_hidden_state
-        feature = feature * teacher_mask.to(device).unsqueeze(-1)
-        cov_mask = series_covariance_mask(teacher_mask.to(device), n)
+        feature = feature * teacher_mask.unsqueeze(-1)
+        cov_mask = series_covariance_mask(teacher_mask, n)
         cov_feature = series_covariance(feature, n)
         cov_feature = cov_feature * cov_mask
         cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
         cov_feature = prototype.module.forward(cov_feature).select(-1, 1)
-        cor_feature = series_correlation(cov_feature)
-        cor_teacher = series_correlation(cov_teacher)
-        x = cor_feature.masked_select(cov_mask)
-        y = cor_teacher.masked_select(cov_mask)
+        cov_feature = cov_feature * cov_mask
+        # cor_feature = series_correlation(cov_feature)
+        # cor_teacher = series_correlation(cov_teacher + 1.5)
+        
+        v = series_variance(cov_teacher)
+        print(v.mean().item(), v.std().item(), v.min().item(), v.max().item())
+        stable_mask = series_covariance_mask(v.lt(2.0).long(), n)
+        cov_mask = cov_mask.logical_and(stable_mask)
+        
+        x = cov_feature.masked_select(cov_mask)
+        y = cov_teacher.masked_select(cov_mask)
+        # cor_loss = torch.nn.functional.mse_loss(x, y)
         loss = torch.nn.functional.mse_loss(x, y)
-        return x, y, cor_feature, cor_teacher, loss
+        # vx = series_variance(cov_feature).masked_select(teacher_mask.bool())
+        # vy = series_variance(cov_teacher).masked_select(teacher_mask.bool())
+        # var_loss = kld_gaussian(vy, vx).mean()
+        return cov_feature, cov_teacher, loss
 
 
     def train_one_epoch(
@@ -50,7 +68,8 @@ def main_worker(rank, world_size, args):
         device, rank, pbar,
     ):
         for batch_idx, batch in enumerate(train_dataloader):
-            x, y, _, _, loss = forward_one_step(batch, model, prototype, device)
+            _, _, loss = forward_one_step(batch, model, prototype, device)
+            # loss = cor_loss + var_loss
 
             loss.backward()
             optimizer.step()
@@ -58,15 +77,13 @@ def main_worker(rank, world_size, args):
             optimizer.zero_grad()
 
             if rank == 0:
-                wandb.log({"train/loss": loss.item()})
+                wandb.log({
+                    "train/loss": loss.item(),
+                })
                 if pbar:
                     pbar.update(1)
                     pbar.set_postfix(
                         loss=loss.item(),
-                        x_mean=x.mean().item(),
-                        x_std=x.std().item(),
-                        y_mean=y.mean().item(),
-                        y_std=y.std().item(),
                     )
 
         if rank == 0 and pbar:
@@ -74,15 +91,15 @@ def main_worker(rank, world_size, args):
 
     @torch.no_grad()
     def plot(batch, model, prototype, device, epoch=None):
-        _, _, x, y, _ = forward_one_step(batch, model, prototype, device)
+        x, y, _ = forward_one_step(batch, model, prototype, device)
 
         x = x.flatten(0, 2)
         y = y.flatten(0, 2)
 
         # min_val = min(x.min().item(), y.min().item())
         # max_val = max(x.max().item(), y.max().item())
-        min_val = -1
-        max_val = 1
+        min_val = 0
+        max_val = 2
 
         fig, ax = plt.subplots(1, 2, figsize=(10, 6))
         lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val, aspect='auto')
@@ -105,20 +122,35 @@ def main_worker(rank, world_size, args):
         model, prototype, 
         device, rank, pbar, world_size,
     ):
+        # cor_loss_list = []
+        # var_loss_list = []
         loss_list = []
         first_batch = None
         for batch_idx, batch in enumerate(valid_dataloader):
             if rank == 0 and first_batch is None:
                 first_batch = batch
-            _, _, _, _, loss = forward_one_step(batch, model, prototype, device)
+            # _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device)
+            _, _, loss = forward_one_step(batch, model, prototype, device)
             
             # Gather losses from all processes
+            # cor_loss_tensor = torch.tensor([cor_loss.item()], device=device)
+            # gathered_cor_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            # dist.all_gather(gathered_cor_losses, cor_loss_tensor)
+            
+            # var_loss_tensor = torch.tensor([var_loss.item()], device=device)
+            # gathered_var_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            # dist.all_gather(gathered_var_losses, var_loss_tensor)
+            
             loss_tensor = torch.tensor([loss.item()], device=device)
             gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
             dist.all_gather(gathered_losses, loss_tensor)
 
             if rank == 0:
                 # Extend list with losses from all processes
+                # for l in gathered_cor_losses:
+                #     cor_loss_list.append(l.item())
+                # for l in gathered_var_losses:
+                #     var_loss_list.append(l.item())
                 for l in gathered_losses:
                     loss_list.append(l.item())
                 if pbar:
@@ -127,9 +159,16 @@ def main_worker(rank, world_size, args):
         if rank == 0 and pbar:
             pbar.reset()
 
+        # cor_loss_avg = sum(cor_loss_list) / len(cor_loss_list) if cor_loss_list else 0.0
+        # var_loss_avg = sum(var_loss_list) / len(var_loss_list) if var_loss_list else 0.0
         loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
         if rank == 0:
-            wandb.log({"valid/loss_avg": loss_avg})
+            wandb.log({
+                # "valid/cor_loss": cor_loss_avg, 
+                # "valid/var_loss": var_loss_avg,
+                # "valid/loss": cor_loss_avg + var_loss_avg
+                "valid/loss": loss_avg
+            })
         return loss_avg, first_batch
     
     print(f"[main_worker] rank={rank}, world_size={world_size}")

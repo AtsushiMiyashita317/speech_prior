@@ -25,11 +25,10 @@ def main():
         subset_list=[args.subset],
     )
     
-    coef = 1e-3
     
     def wrapper(i):
         _, features = dataset[i]  # features: (T, D)
-        features_np = features.numpy().astype(np.float64) * coef
+        features_np = features.numpy().astype(np.float64)
         sum_ = np.sum(features_np, axis=0)
         sum_sq = np.sum(features_np ** 2, axis=0)
         count = features_np.shape[0]
@@ -43,8 +42,8 @@ def main():
     sum_sq = np.stack([r[1] for r in results], axis=0).sum(axis=0)
     count = sum([r[2] for r in results])
     
-    mean = sum_ / count / coef
-    smean = sum_sq / count / (coef ** 2)
+    mean = sum_ / count
+    smean = sum_sq / count
 
     # 保存
     np.savez(args.output, mean=mean, smean=smean)

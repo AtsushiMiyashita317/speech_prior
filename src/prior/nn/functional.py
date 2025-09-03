@@ -71,6 +71,19 @@ def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
 
     return k_mask.ge(0.5)
 
+def series_variance(k: torch.Tensor) -> torch.Tensor:
+    """Forward pass for the kernel.
+
+    Args:
+        k (torch.Tensor): Input tensor of shape (b0, b1, n, t).
+
+    Returns:
+        torch.Tensor: Output tensor of shape (b, t).
+    """
+    v = k.diagonal(dim1=0,dim2=1).permute(2, 0, 1)               # (b, n, t)   
+    v = v.select(-2, 0)                                             # (b, t)
+    return v
+
 def series_correlation(k: torch.Tensor) -> torch.Tensor:
     """Forward pass for the kernel.
 
@@ -82,8 +95,7 @@ def series_correlation(k: torch.Tensor) -> torch.Tensor:
     """
     B, N, T = k.size(0), k.size(-2), k.size(-1)
 
-    v = k.diagonal(dim1=0,dim2=1).permute(2, 0, 1)               # (b, n, t)   
-    v = v.select(-2, 0)                                             # (b, t)    
+    v = series_variance(k)                                          # (b, t)
     v = torch.nn.functional.pad(v, (0, N-1), value=0)
     v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(-2)            # (b, 1, 1, t)
     v_yy = torch.as_strided(
@@ -96,3 +108,19 @@ def series_correlation(k: torch.Tensor) -> torch.Tensor:
     rho, std_x, std_y = calculate_statistics(v_xx, v_yy, v_xy)      # (b0, b1, n, t)
     
     return rho
+
+def kld_gaussian(p_var: torch.Tensor, q_var: torch.Tensor, eps=1e-10) -> torch.Tensor:
+    """KL divergence between two Gaussian distributions.
+
+    Args:
+        p_var (torch.Tensor): Variance of the first distribution.
+        q_var (torch.Tensor): Variance of the second distribution.
+        eps (float, optional): Small value to avoid division by zero. Defaults to 1e-10.
+
+    Returns:
+        torch.Tensor: KL divergence.
+    """
+    p_var = torch.clamp(p_var, min=eps)
+    q_var = torch.clamp(q_var, min=eps)
+    kld = 0.5 * (p_var.log() - q_var.log() + q_var.div(p_var) - 1)
+    return kld

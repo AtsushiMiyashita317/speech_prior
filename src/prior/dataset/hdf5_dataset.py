@@ -52,9 +52,9 @@ class HDF5Dataset:
                 self.feature_range[model] = {}
             self.feature_range[model][layer] = (start, end)
             
-            if mean is not None:
-                mean[start:end] = mean[start:end].mean()
-                smean[start:end] = smean[start:end].mean()
+            # if mean is not None:
+            #     mean[start:end] = mean[start:end].mean()
+            #     smean[start:end] = smean[start:end].mean()
                 
         if mean is not None:
             self.mean = mean
@@ -82,7 +82,7 @@ class HDF5Dataset:
         wave = (wave - wave.mean()) / (wave.std() + 1e-7)
         
         if self.mean is not None and self.std is not None:
-            features = (features - self.mean) / self.std
+            features = (features - self.mean) / (self.std + 1e-7)
 
         return wave, features
 

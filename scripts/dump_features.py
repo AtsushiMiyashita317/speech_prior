@@ -19,6 +19,7 @@ from transformers import (
     AutoModel, AutoProcessor, AutoFeatureExtractor, Wav2Vec2Processor,
     WhisperModel, WhisperProcessor
 )
+from speechbrain.inference.classifiers import EncoderClassifier
 
 MAX_LEN = 1500
 
@@ -64,15 +65,11 @@ def build_ssl_model(model_id: str, device: torch.device):
 
 def build_whisper_model(model_id: str, device: torch.device):
     model = WhisperModel.from_pretrained(model_id).to(device).eval()
-    processor = WhisperProcessor.from_pretrained(model_id)
+    processor = AutoProcessor.from_pretrained(model_id)
     return model, processor
 
 def build_xvector_model(model_id: str, device: torch.device):
-    try:
-        from speechbrain.inference.classifiers import EncoderClassifier
-    except ImportError as e:
-        raise RuntimeError("x-vector を使うには `pip install speechbrain` が必要です") from e
-    clf = EncoderClassifier.from_hparams(source=model_id, run_opts={"device": str(device)})
+    clf = EncoderClassifier.from_hparams(source=model_id, run_opts={"device": str(device)}).eval()
     return clf
 
 # ---------- hooks ----------
@@ -141,11 +138,7 @@ def dump_one_file(
         return out_subdir / f"{arch}.{lid}.npy"
 
     if not overwrite:
-        if arch in ["hubert", "wavlm", "wav2vec", "whisper"]:
-            targets = [f"layer{lid}" for lid in layer_ids]
-        else:  # xvector
-            targets = [f"blocks.{lid*3}" for lid in layer_ids]
-        if targets and all(out_npy(t).exists() for t in targets):
+        if layer_ids and all(out_npy(lid).exists() for lid in layer_ids):
             return {"status": "skip", "path": str(wav_path)}
 
     if arch in ["hubert", "wavlm", "wav2vec"]:
@@ -191,17 +184,10 @@ def dump_one_file(
 
     elif arch == "xvector":
         wav_t = torch.from_numpy(wav).float().unsqueeze(0).to(device)  # [1, n]
-        # 長さは正規化用に相対長でOK（1.0）※音声ごとに可変でもよい
-        wav_lens = torch.ones(wav_t.shape[0], device=device)
-
-        # 1) SBフロントエンドで特徴抽出（モデルに合った次元=ここでは24）
-        feats = model_obj.mods.compute_features(wav_t)          # [B, T, F]  (F=24想定)
-        feats = model_obj.mods.mean_var_norm(feats, wav_lens)   # [B, T, F]  正規化
 
         acts, handles = attach_xvector_hooks(model_obj, layer_ids)
         with torch.no_grad():
-            em = model_obj.mods.embedding_model
-            _ = em(feats)  # ← これで最初のConv(in=24)に合う
+            _ = model_obj.encode_batch(wav_t)
         for h in handles: h.remove()
 
         it = layer_ids
