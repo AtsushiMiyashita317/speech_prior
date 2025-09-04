@@ -162,9 +162,9 @@ class Conv1d(KernelModule):
         self.dilation = dilation
 
         if last_layer:
-            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 1.0 / math.sqrt(kernel_size)))
+            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 1.0 / kernel_size))
         else:
-            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 2.0 / math.sqrt(kernel_size)))
+            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 2.0 / kernel_size))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))

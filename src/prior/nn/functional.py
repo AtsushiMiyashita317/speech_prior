@@ -1,19 +1,22 @@
 import torch
-import math
 
 def calculate_statistics(v_xx: torch.Tensor, v_yy: torch.Tensor, v_xy: torch.Tensor, eps=1e-10) -> torch.Tensor:
-    std_x = torch.sqrt(torch.clamp(v_xx, min=eps))
-    std_y = torch.sqrt(torch.clamp(v_yy, min=eps))
+    v_xx = torch.clamp(v_xx.detach(), min=eps) + (v_xx - v_xx.detach())
+    v_yy = torch.clamp(v_yy.detach(), min=eps) + (v_yy - v_yy.detach())
+    std_x = torch.sqrt(v_xx)
+    std_y = torch.sqrt(v_yy)
     rho = v_xy / std_x / std_y
     return rho, std_x, std_y
 
 def covariance_relu(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
-    theta = torch.arccos(torch.clamp(rho, -0.9999, 0.9999))
+    rho = torch.clamp(rho.detach(), -0.99, 0.99) + (rho - rho.detach())
+    theta = torch.arccos(rho)
     c = torch.sin(theta) + (torch.pi - theta) * torch.cos(theta)
     return c * std_x * std_y / (2*torch.pi)
 
 def covariance_heaviside(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
-    theta = torch.arccos(torch.clamp(rho, -0.9999, 0.9999))
+    rho = torch.clamp(rho.detach(), -0.99, 0.99) + (rho - rho.detach())
+    theta = torch.arccos(rho)
     c = 0.5 - theta / (2*torch.pi)
     return c
 
@@ -24,7 +27,7 @@ def series_covariance(x: torch.Tensor, n: int) -> torch.Tensor:
     """
     B, T, C = x.size(0), x.size(-2), x.size(-1)
 
-    x = torch.nn.functional.pad(x, (0, 0, 0, n-1))  # (b, t, c)
+    x = torch.nn.functional.pad(x, (0, 0, 0, n-1)).contiguous()  # (b, t, c)
     x_strided = torch.as_strided(
         x,
         size=(B, T, n, C),
@@ -42,7 +45,7 @@ def series_product(x: torch.Tensor, n: int) -> torch.Tensor:
     """
     B, T = x.size(0), x.size(-1)
 
-    x = torch.nn.functional.pad(x, (0, n-1))  # (b, t)
+    x = torch.nn.functional.pad(x, (0, n-1)).contiguous()  # (b, t)
     x_strided = torch.as_strided(
         x,
         size=(1, B, n, T),
@@ -60,7 +63,7 @@ def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
     """
     B, T = mask.size(0), mask.size(-1)
 
-    mask = torch.nn.functional.pad(mask, (0, n-1))  # (b, t)
+    mask = torch.nn.functional.pad(mask, (0, n-1)).contiguous()  # (b, t)
     mask_strided = torch.as_strided(
         mask,
         size=(1, B, n, T),
@@ -96,8 +99,8 @@ def series_correlation(k: torch.Tensor) -> torch.Tensor:
     B, N, T = k.size(0), k.size(-2), k.size(-1)
 
     v = series_variance(k)                                          # (b, t)
-    v = torch.nn.functional.pad(v, (0, N-1), value=0)
-    v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(-2)            # (b, 1, 1, t)
+    v = torch.nn.functional.pad(v, (0, N-1), value=0).contiguous()
+    v_xx = v.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1)            # (b, 1, 1, t)
     v_yy = torch.as_strided(
         v,
         size=(1, B, N, T),
@@ -120,7 +123,7 @@ def kld_gaussian(p_var: torch.Tensor, q_var: torch.Tensor, eps=1e-10) -> torch.T
     Returns:
         torch.Tensor: KL divergence.
     """
-    p_var = torch.clamp(p_var, min=eps)
-    q_var = torch.clamp(q_var, min=eps)
+    p_var = torch.clamp(p_var.detach(), min=eps) + (p_var - p_var.detach())
+    q_var = torch.clamp(q_var.detach(), min=eps) + (q_var - q_var.detach())
     kld = 0.5 * (p_var.log() - q_var.log() + q_var.div(p_var) - 1)
     return kld

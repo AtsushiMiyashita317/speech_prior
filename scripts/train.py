@@ -25,12 +25,12 @@ def main_worker(rank, world_size, args):
     from prior.nn.model.feature_extractor import BothsidePaddedWav2Vec2Model
 
     def forward_one_step(
-        batch, model, prototype, device
+        batch, model, prototype, device, kernel_bins
     ):
         wave, teacher, wave_mask, teacher_mask = batch
         teacher_mask = teacher_mask.to(device)
         b = wave.size(0)
-        n = 256 // b
+        n = kernel_bins // b
         cov_teacher = series_covariance(teacher.to(device), n)
         feature = model.module.forward(
             wave.to(device), 
@@ -42,34 +42,36 @@ def main_worker(rank, world_size, args):
         cov_feature = cov_feature * cov_mask
         cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
         cov_feature = prototype.module.forward(cov_feature).select(-1, 1)
-        cov_feature = cov_feature * cov_mask
-        # cor_feature = series_correlation(cov_feature)
-        # cor_teacher = series_correlation(cov_teacher + 1.5)
         
         v = series_variance(cov_teacher)
-        print(v.mean().item(), v.std().item(), v.min().item(), v.max().item())
         stable_mask = series_covariance_mask(v.lt(2.0).long(), n)
         cov_mask = cov_mask.logical_and(stable_mask)
+        cov_teacher = (cov_teacher + 1.5) * cov_mask
+        cov_feature = cov_feature * cov_mask
         
-        x = cov_feature.masked_select(cov_mask)
-        y = cov_teacher.masked_select(cov_mask)
-        # cor_loss = torch.nn.functional.mse_loss(x, y)
-        loss = torch.nn.functional.mse_loss(x, y)
-        # vx = series_variance(cov_feature).masked_select(teacher_mask.bool())
-        # vy = series_variance(cov_teacher).masked_select(teacher_mask.bool())
-        # var_loss = kld_gaussian(vy, vx).mean()
-        return cov_feature, cov_teacher, loss
+        cor_feature = series_correlation(cov_feature)
+        cor_teacher = series_correlation(cov_teacher)
+        
+        
+        x = cor_feature.masked_select(cov_mask)
+        y = cor_teacher.masked_select(cov_mask)
+        cor_loss = torch.nn.functional.mse_loss(x, y)
+        # loss = torch.nn.functional.mse_loss(x, y)
+        vx = series_variance(cov_feature).masked_select(teacher_mask.bool())
+        vy = series_variance(cov_teacher).masked_select(teacher_mask.bool())
+        var_loss = kld_gaussian(vy, vx).mean()
+        return cor_feature, cor_teacher, cor_loss, var_loss
 
 
     def train_one_epoch(
         train_dataloader,
         model, prototype, 
         optimizer, scheduler,
-        device, rank, pbar,
+        device, rank, pbar, kernel_bins
     ):
         for batch_idx, batch in enumerate(train_dataloader):
-            _, _, loss = forward_one_step(batch, model, prototype, device)
-            # loss = cor_loss + var_loss
+            _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
+            loss = cor_loss + var_loss
 
             loss.backward()
             optimizer.step()
@@ -78,6 +80,8 @@ def main_worker(rank, world_size, args):
 
             if rank == 0:
                 wandb.log({
+                    "train/cor_loss": cor_loss.item(),
+                    "train/var_loss": var_loss.item(),
                     "train/loss": loss.item(),
                 })
                 if pbar:
@@ -90,21 +94,21 @@ def main_worker(rank, world_size, args):
             pbar.reset()
 
     @torch.no_grad()
-    def plot(batch, model, prototype, device, epoch=None):
-        x, y, _ = forward_one_step(batch, model, prototype, device)
+    def plot(batch, model, prototype, device, kernel_bins):
+        x, y, _, _ = forward_one_step(batch, model, prototype, device, kernel_bins)
 
         x = x.flatten(0, 2)
         y = y.flatten(0, 2)
 
-        # min_val = min(x.min().item(), y.min().item())
-        # max_val = max(x.max().item(), y.max().item())
-        min_val = 0
-        max_val = 2
+        min_val = min(x.min().item(), y.min().item())
+        max_val = max(x.max().item(), y.max().item())
+        # min_val = 0
+        # max_val = 3.5
 
-        fig, ax = plt.subplots(1, 2, figsize=(10, 6))
-        lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val, aspect='auto')
+        fig, ax = plt.subplots(1, 2, figsize=(40, 24))
+        lx = ax[0].imshow(x.cpu(), vmin=min_val, vmax=max_val, aspect='auto', interpolation='nearest')
         ax[0].set_title("Predicted")
-        ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val, aspect='auto')
+        ly = ax[1].imshow(y.cpu(), vmin=min_val, vmax=max_val, aspect='auto', interpolation='nearest')
         ax[1].set_title("Target")
         fig.colorbar(lx, ax=ax[0])
         fig.colorbar(ly, ax=ax[1])
@@ -112,64 +116,63 @@ def main_worker(rank, world_size, args):
         plt.tight_layout()
 
         # wandb 画像記録
-        if epoch is not None:
-            wandb.log({"plot": wandb.Image(fig)})
+        wandb.log({"plot": wandb.Image(fig)})
         plt.close(fig)
 
     @torch.no_grad()
     def validate(
         valid_dataloader,
         model, prototype, 
-        device, rank, pbar, world_size,
+        device, rank, pbar, world_size, kernel_bins
     ):
-        # cor_loss_list = []
-        # var_loss_list = []
-        loss_list = []
+        cor_loss_list = []
+        var_loss_list = []
+        # loss_list = []
         first_batch = None
         for batch_idx, batch in enumerate(valid_dataloader):
             if rank == 0 and first_batch is None:
                 first_batch = batch
-            # _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device)
-            _, _, loss = forward_one_step(batch, model, prototype, device)
+            _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
+            # _, _, loss = forward_one_step(batch, model, prototype, device, kernel_bins)
             
             # Gather losses from all processes
-            # cor_loss_tensor = torch.tensor([cor_loss.item()], device=device)
-            # gathered_cor_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
-            # dist.all_gather(gathered_cor_losses, cor_loss_tensor)
+            cor_loss_tensor = torch.tensor([cor_loss.item()], device=device)
+            gathered_cor_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            dist.all_gather(gathered_cor_losses, cor_loss_tensor)
             
-            # var_loss_tensor = torch.tensor([var_loss.item()], device=device)
-            # gathered_var_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
-            # dist.all_gather(gathered_var_losses, var_loss_tensor)
+            var_loss_tensor = torch.tensor([var_loss.item()], device=device)
+            gathered_var_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            dist.all_gather(gathered_var_losses, var_loss_tensor)
             
-            loss_tensor = torch.tensor([loss.item()], device=device)
-            gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
-            dist.all_gather(gathered_losses, loss_tensor)
+            # loss_tensor = torch.tensor([loss.item()], device=device)
+            # gathered_losses = [torch.zeros(1, device=device) for _ in range(world_size)]
+            # dist.all_gather(gathered_losses, loss_tensor)
 
             if rank == 0:
                 # Extend list with losses from all processes
-                # for l in gathered_cor_losses:
-                #     cor_loss_list.append(l.item())
-                # for l in gathered_var_losses:
-                #     var_loss_list.append(l.item())
-                for l in gathered_losses:
-                    loss_list.append(l.item())
+                for l in gathered_cor_losses:
+                    cor_loss_list.append(l.item())
+                for l in gathered_var_losses:
+                    var_loss_list.append(l.item())
+                # for l in gathered_losses:
+                #     loss_list.append(l.item())
                 if pbar:
                     pbar.update(1)
 
         if rank == 0 and pbar:
             pbar.reset()
 
-        # cor_loss_avg = sum(cor_loss_list) / len(cor_loss_list) if cor_loss_list else 0.0
-        # var_loss_avg = sum(var_loss_list) / len(var_loss_list) if var_loss_list else 0.0
-        loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
+        cor_loss_avg = sum(cor_loss_list) / len(cor_loss_list) if cor_loss_list else 0.0
+        var_loss_avg = sum(var_loss_list) / len(var_loss_list) if var_loss_list else 0.0
+        # loss_avg = sum(loss_list) / len(loss_list) if loss_list else 0.0
         if rank == 0:
             wandb.log({
-                # "valid/cor_loss": cor_loss_avg, 
-                # "valid/var_loss": var_loss_avg,
-                # "valid/loss": cor_loss_avg + var_loss_avg
-                "valid/loss": loss_avg
+                "valid/cor_loss": cor_loss_avg, 
+                "valid/var_loss": var_loss_avg,
+                "valid/loss": cor_loss_avg + var_loss_avg
+                # "valid/loss": loss_avg
             })
-        return loss_avg, first_batch
+        return cor_loss_avg + var_loss_avg, first_batch
     
     print(f"[main_worker] rank={rank}, world_size={world_size}")
     # DDP setup
@@ -292,6 +295,7 @@ def main_worker(rank, world_size, args):
             device,
             rank,
             train_pbar,
+            args.kernel_bins,
         )
 
         model.eval()
@@ -304,9 +308,10 @@ def main_worker(rank, world_size, args):
             rank=rank,
             pbar=valid_pbar,
             world_size=world_size,
+            kernel_bins=args.kernel_bins
         )
         if rank == 0 and plot_batch is not None:
-            plot(plot_batch, model, prototype, device, epoch)
+            plot(plot_batch, model, prototype, device, args.kernel_bins)
         
 
         if epoch % 10 == 0 and rank == 0:
@@ -336,8 +341,9 @@ def main():
     parser.add_argument("--utterance_parquet", type=str, default="utterance.parquet")
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--batch_bins", type=int, default=8000)
-    parser.add_argument("--num_folds", type=int, default=64)
+    parser.add_argument("--num_folds", type=int, default=256)
     parser.add_argument("--hop_length", type=int, default=320)
+    parser.add_argument("--kernel_bins", type=int, default=320)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--num_epochs", type=int, default=1000)
     parser.add_argument("--master_addr", type=str, default="localhost")
