@@ -1,5 +1,6 @@
 import argparse
 import os
+import gc
 import torch.multiprocessing as mp
 
 
@@ -23,6 +24,12 @@ def main_worker(rank, world_size, args):
     )
     from prior.nn.model.cnn1d import CNN1dKernel
     from prior.nn.model.feature_extractor import BothsidePaddedWav2Vec2Model
+    
+
+    def is_cuda_oom(err: Exception) -> bool:
+        msg = str(err).lower()
+        return isinstance(err, RuntimeError) and ("CUDA out of memory" in msg)
+
 
     def forward_one_step(
         batch, model, prototype, device, kernel_bins
@@ -36,18 +43,20 @@ def main_worker(rank, world_size, args):
             wave.to(device), 
             attention_mask=wave_mask.to(device)
         ).last_hidden_state
-        feature = feature * teacher_mask.unsqueeze(-1)
+        feature = feature.masked_fill(teacher_mask.unsqueeze(-1).logical_not(), 0.0)
         cov_mask = series_covariance_mask(teacher_mask, n)
+        cov_mask_not = cov_mask.logical_not()
         cov_feature = series_covariance(feature, n)
-        cov_feature = cov_feature * cov_mask
+        cov_feature = cov_feature.masked_fill(cov_mask_not, 0.0)
         cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
-        cov_feature = prototype.module.forward(cov_feature, mask=cov_mask).select(-1, 1)
+        cov_feature = prototype.module.forward(cov_feature, mask=cov_mask_not.unsqueeze(-1)).select(-1, 1)
         
         v = series_variance(cov_teacher)
         stable_mask = series_covariance_mask(v.lt(2.0).long(), n)
         cov_mask = cov_mask.logical_and(stable_mask)
-        cov_teacher = cov_teacher * cov_mask
-        cov_feature = cov_feature * cov_mask
+        cov_mask_not = cov_mask.logical_not()
+        cov_teacher = cov_teacher.masked_fill(cov_mask_not, 0.0)
+        cov_feature = cov_feature.masked_fill(cov_mask_not, 0.0)
         
         cor_feature = series_correlation(cov_feature)
         cor_teacher = series_correlation(cov_teacher)
@@ -69,12 +78,41 @@ def main_worker(rank, world_size, args):
         optimizer, scheduler,
         device, rank, pbar, kernel_bins
     ):
-        for batch_idx, batch in enumerate(train_dataloader):
-            _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
-            loss = cor_loss + var_loss
+        scaler = torch.amp.GradScaler()
+        for batch_idx, batch in enumerate(train_dataloader):            
+            # rank間共有の OOM フラグ
+            oom_flag = torch.zeros(1, device=device, dtype=torch.int32)
 
-            loss.backward()
-            optimizer.step()
+            try:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
+                    loss = cor_loss + var_loss
+
+                scaler.scale(loss).backward()
+
+            except Exception as e:
+                if is_cuda_oom(e):
+                    oom_flag += 1  # この rank で OOM
+                else:
+                    raise  # 別の例外はそのまま
+
+            # どこか1つでも OOM があれば全員でスキップ
+            dist.all_reduce(oom_flag, op=dist.ReduceOp.SUM)
+
+            if int(oom_flag.item()) > 0:
+                # 片方の rank だけ勾配が乗っている可能性があるので全員で破棄
+                optimizer.zero_grad(set_to_none=True)
+                # メモリ掃除
+                torch.cuda.empty_cache()
+                gc.collect()
+                # コレクティブのズレを避けるため軽く同期
+                dist.barrier()
+                # このマイクロバッチは無かったことに
+                continue
+
+            # ここまで来たら OOM なし。勾配蓄積の境目で step。
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
             optimizer.zero_grad()
 
