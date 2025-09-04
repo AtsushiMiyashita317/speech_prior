@@ -263,7 +263,7 @@ def main_worker(rank, world_size, args):
 
     valid_sampler = FoldedLengthBatchSampler(
         valid_dataset.utt_lens,
-        args.batch_bins,
+        args.batch_bins // 2,
         args.num_folds,
         shuffle=False,
         num_replicas=world_size,
