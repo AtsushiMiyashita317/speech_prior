@@ -113,11 +113,17 @@ class CNN1dKernel(kernel.KernelModule):
             last_layer=True
         )
 
-    def forward(self, k: torch.Tensor) -> torch.Tensor:
+    def forward(self, k: torch.Tensor, mask: torch.Tensor=None) -> torch.Tensor:
         k = self.input_layer.forward(k)
+        if mask is not None:
+            k = k * mask.unsqueeze(-1)
         for layer in self.hidden_layers:
             k = layer.forward(k)
+            if mask is not None:
+                k = k * mask.unsqueeze(-1)
         k = self.output_layer.forward(k)
+        if mask is not None:
+            k = k * mask.unsqueeze(-1)
         return k
     
     def export_network(self, in_channels: int, out_channels: int, hidden_channels: int) -> CNN1dNetwork:

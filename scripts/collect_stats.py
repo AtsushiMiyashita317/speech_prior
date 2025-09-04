@@ -10,7 +10,7 @@ def main():
     parser = argparse.ArgumentParser(description="Calculate mean and variance of features in HDF5Dataset.")
     parser.add_argument('--base_dir', type=str, default='./', help='Base directory')
     parser.add_argument('--hdf5_dir', type=str, default='./datasets', help='HDF5 directory')
-    parser.add_argument('--subset', type=str, default='dev-clean', help='Subset list to filter utterances')
+    parser.add_argument('--subset', type=str, default=None, help='Subset list to filter utterances')
     parser.add_argument('--features_parquet', type=str, default='features.parquet', help='Features parquet filename')
     parser.add_argument('--utterance_parquet', type=str, default='utterance.parquet', help='Utterance parquet filename')
     parser.add_argument('--output', type=str, default='stats.npz', help='Output npz filename')
@@ -22,20 +22,20 @@ def main():
         args.hdf5_dir,
         args.features_parquet,
         args.utterance_parquet,
-        subset_list=[args.subset],
+        subset_list=[args.subset] if args.subset is not None else None,
     )
     
     
     def wrapper(i):
         _, features = dataset[i]  # features: (T, D)
-        features_np = features.numpy().astype(np.float64)
+        features_np = features.numpy()
         sum_ = np.sum(features_np, axis=0)
         sum_sq = np.sum(features_np ** 2, axis=0)
         count = features_np.shape[0]
         
         return sum_, sum_sq, count
     
-    with ThreadPoolExecutor(max_workers=40) as executor:
+    with ThreadPoolExecutor() as executor:
         results = list(tqdm(executor.map(wrapper, range(len(dataset))), total=len(dataset)))
         
     sum_ = np.stack([r[0] for r in results], axis=0).sum(axis=0)

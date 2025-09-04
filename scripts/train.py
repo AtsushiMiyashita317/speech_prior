@@ -41,12 +41,12 @@ def main_worker(rank, world_size, args):
         cov_feature = series_covariance(feature, n)
         cov_feature = cov_feature * cov_mask
         cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
-        cov_feature = prototype.module.forward(cov_feature).select(-1, 1)
+        cov_feature = prototype.module.forward(cov_feature, mask=cov_mask).select(-1, 1)
         
         v = series_variance(cov_teacher)
         stable_mask = series_covariance_mask(v.lt(2.0).long(), n)
         cov_mask = cov_mask.logical_and(stable_mask)
-        cov_teacher = (cov_teacher + 1.5) * cov_mask
+        cov_teacher = cov_teacher * cov_mask
         cov_feature = cov_feature * cov_mask
         
         cor_feature = series_correlation(cov_feature)
@@ -340,12 +340,12 @@ def main():
     parser.add_argument("--features_parquet", type=str, default="features.parquet")
     parser.add_argument("--utterance_parquet", type=str, default="utterance.parquet")
     parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument("--batch_bins", type=int, default=8000)
+    parser.add_argument("--batch_bins", type=int, default=6000)
     parser.add_argument("--num_folds", type=int, default=256)
     parser.add_argument("--hop_length", type=int, default=320)
     parser.add_argument("--kernel_bins", type=int, default=320)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--num_epochs", type=int, default=1000)
+    parser.add_argument("--num_epochs", type=int, default=500)
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="12355")
 

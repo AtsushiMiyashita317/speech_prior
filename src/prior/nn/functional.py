@@ -1,21 +1,39 @@
 import torch
 
+def clamp_preserve_grad(x: torch.Tensor, min: float=None, max: float=None) -> torch.Tensor:
+    return torch.clamp(x.detach(), min, max) + (x - x.detach())
+
 def calculate_statistics(v_xx: torch.Tensor, v_yy: torch.Tensor, v_xy: torch.Tensor, eps=1e-10) -> torch.Tensor:
-    v_xx = torch.clamp(v_xx.detach(), min=eps) + (v_xx - v_xx.detach())
-    v_yy = torch.clamp(v_yy.detach(), min=eps) + (v_yy - v_yy.detach())
+    v_xx = clamp_preserve_grad(v_xx, min=eps)
+    v_yy = clamp_preserve_grad(v_yy, min=eps)
     std_x = torch.sqrt(v_xx)
     std_y = torch.sqrt(v_yy)
     rho = v_xy / std_x / std_y
     return rho, std_x, std_y
 
-def covariance_relu(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
-    rho = torch.clamp(rho.detach(), -0.99, 0.99) + (rho - rho.detach())
+def correlation_relu(rho: torch.Tensor) -> torch.Tensor:
+    rho = clamp_preserve_grad(rho, -0.99, 0.99)
     theta = torch.arccos(rho)
     c = torch.sin(theta) + (torch.pi - theta) * torch.cos(theta)
-    return c * std_x * std_y / (2*torch.pi)
+    return c / (2*torch.pi)
+
+def covariance_relu(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
+    c = correlation_relu(rho)
+    return c * std_x * std_y
+
+def covariance_leaky_relu(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+    c = correlation_relu(rho)
+    c = (1 - alpha)**2 * c + alpha * rho
+    return c * std_x * std_y
+
+def covariance_leaky_relu_derivative(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
+    rho = clamp_preserve_grad(rho, -0.99, 0.99)
+    theta = torch.arccos(rho)
+    c = ((1 + alpha**2) * (torch.pi - theta) + 2 * alpha * theta) / (2*torch.pi)
+    return c
 
 def covariance_heaviside(rho: torch.Tensor, std_x: torch.Tensor, std_y: torch.Tensor) -> torch.Tensor:
-    rho = torch.clamp(rho.detach(), -0.99, 0.99) + (rho - rho.detach())
+    rho = clamp_preserve_grad(rho, -0.99, 0.99)
     theta = torch.arccos(rho)
     c = 0.5 - theta / (2*torch.pi)
     return c
@@ -123,7 +141,7 @@ def kld_gaussian(p_var: torch.Tensor, q_var: torch.Tensor, eps=1e-10) -> torch.T
     Returns:
         torch.Tensor: KL divergence.
     """
-    p_var = torch.clamp(p_var.detach(), min=eps) + (p_var - p_var.detach())
-    q_var = torch.clamp(q_var.detach(), min=eps) + (q_var - q_var.detach())
+    p_var = clamp_preserve_grad(p_var, min=eps)
+    q_var = clamp_preserve_grad(q_var, min=eps)
     kld = 0.5 * (p_var.log() - q_var.log() + q_var.div(p_var) - 1)
     return kld

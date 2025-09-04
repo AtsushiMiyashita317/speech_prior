@@ -9,9 +9,20 @@ from tqdm import tqdm
 import torchaudio
 from pathlib import Path
 
-def find_utt_dirs(dumps_root):
+def find_utt_dirs(dumps_root, subsets=[]):
     # dumps/**/<utt_id> ディレクトリを再帰的に探索
     utt_dirs = []
+    if subsets:
+        for subset in subsets:
+            subset_root = os.path.join(dumps_root, subset)
+            for root, dirs, files in os.walk(subset_root):
+                for d in dirs:
+                    utt_path = os.path.join(root, d)
+                    npy_files = glob.glob(os.path.join(utt_path, "*.npy"))
+                    if npy_files:
+                        utt_dirs.append(utt_path)
+        return utt_dirs
+    
     for root, dirs, files in os.walk(dumps_root):
         for d in dirs:
             utt_path = os.path.join(root, d)
@@ -87,9 +98,10 @@ def main():
     parser.add_argument("--dataset_root", type=str, default="datasets", help="Path to output dataset directory")
     parser.add_argument("--features_parquet", type=str, default="features.parquet", help="Output features parquet file")
     parser.add_argument("--utterance_parquet", type=str, default="utterance.parquet", help="Output utterance parquet file")
+    parser.add_argument("--subsets", type=str, nargs='*', help="Subsets to process (e.g., train, dev, test). If not set, process all.")
     args = parser.parse_args()
 
-    utt_dirs = find_utt_dirs(args.dumps_root)
+    utt_dirs = find_utt_dirs(args.dumps_root, args.subsets)
     features_records = []
     utterance_records = []
     seen_features = set()

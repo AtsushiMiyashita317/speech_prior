@@ -3,7 +3,7 @@ import math
 import torch
 
 import prior.nn.module.network as network
-from prior.nn.functional import calculate_statistics, covariance_heaviside, covariance_relu
+from prior.nn.functional import calculate_statistics, covariance_leaky_relu, covariance_leaky_relu_derivative, clamp_preserve_grad
     
 
 class KernelModule(torch.nn.Module):
@@ -17,7 +17,7 @@ class Embedding(KernelModule):
     ):
         super(Embedding, self).__init__()
         self.bias_flag = bias
-        self.alpha = torch.nn.Parameter(torch.tensor(2.0))
+        self.alpha = torch.nn.Parameter(torch.tensor(1.0))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))
@@ -32,9 +32,9 @@ class Embedding(KernelModule):
             torch.nn.init.constant_(self.beta, 0.0)
     
     def forward(self, k: torch.Tensor) -> torch.Tensor:
-        k = k * self.alpha.abs()
+        k = k * clamp_preserve_grad(self.alpha, min=0)
         if self.beta is not None:
-            k = k + self.beta.abs()
+            k = k + clamp_preserve_grad(self.beta, min=0)
         return k
     
     def export_network(self, in_features, out_features, **kwargs) -> network.Embedding:
@@ -56,8 +56,10 @@ class Linear(KernelModule):
         super(Linear, self).__init__()
         self.bias_flag = bias
         self.last_layer = last_layer
+        
+        self.leak = torch.nn.Parameter(torch.tensor(1.0))
 
-        self.alpha = torch.nn.Parameter(torch.tensor(2.0))
+        self.alpha = torch.nn.Parameter(torch.tensor(1.0))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))
@@ -66,7 +68,8 @@ class Linear(KernelModule):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.nn.init.constant_(self.alpha, 2.0)
+        torch.nn.init.constant_(self.leak, 1.0)
+        torch.nn.init.constant_(self.alpha, 1.0)
         if self.beta is not None:
             torch.nn.init.constant_(self.beta, 0.0)
     
@@ -77,13 +80,14 @@ class Linear(KernelModule):
         v_yy = v.unsqueeze(-2)
         v_xy = k_gp
         rho, std_x, std_y = calculate_statistics(v_xx, v_yy, v_xy)
-        c0 = covariance_relu(rho, std_x, std_y)
-        c1 = covariance_heaviside(rho, std_x, std_y)
-        k_gp = self.alpha.abs() * c0
-        k_ntk = self.alpha.abs() * k_ntk * c1 + k_gp
+        c0 = covariance_leaky_relu(rho, std_x, std_y, clamp_preserve_grad(self.leak, min=0))
+        c1 = covariance_leaky_relu_derivative(rho, std_x, std_y, clamp_preserve_grad(self.leak, min=0))
+
+        k_gp = clamp_preserve_grad(self.alpha, min=0) * c0
+        k_ntk = clamp_preserve_grad(self.alpha, min=0) * k_ntk * c1 + k_gp
         if self.beta is not None:
-            k_gp = k_gp + self.beta.abs()
-            k_ntk = k_ntk + self.beta.abs()
+            k_gp = k_gp + clamp_preserve_grad(self.beta, min=0)
+            k_ntk = k_ntk + clamp_preserve_grad(self.beta, min=0)
         k = torch.stack([k_gp, k_ntk], dim=-1)
         return k
  
@@ -105,7 +109,7 @@ class Conv1d1x1(KernelModule):
         super(Conv1d1x1, self).__init__()
         self.bias_flag = bias
 
-        self.alpha = torch.nn.Parameter(torch.full((1, 1, 1), 2.0))
+        self.alpha = torch.nn.Parameter(torch.full((1, 1, 1), 1.0))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))
@@ -114,7 +118,7 @@ class Conv1d1x1(KernelModule):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.nn.init.constant_(self.alpha, 2.0)
+        torch.nn.init.constant_(self.alpha, 1.0)
         if self.beta is not None:
             torch.nn.init.constant_(self.beta, 0.0)
     
@@ -127,9 +131,9 @@ class Conv1d1x1(KernelModule):
         Returns:
             torch.Tensor: Output tensor of shape (b0, b1, n, t, 2).
         """
-        k = k * self.alpha.abs()
+        k = k * clamp_preserve_grad(self.alpha, min=0)
         if self.beta is not None:
-            k = k + self.beta.abs()
+            k = k + clamp_preserve_grad(self.beta, min=0)
 
         return k
 
@@ -160,11 +164,9 @@ class Conv1d(KernelModule):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
+        self.leak = torch.nn.Parameter(torch.tensor(1.0))
 
-        if last_layer:
-            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 1.0 / kernel_size))
-        else:
-            self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 2.0 / kernel_size))
+        self.alpha = torch.nn.Parameter(torch.full((1, 1, kernel_size), 1.0 / kernel_size))
 
         if bias:
             self.beta = torch.nn.Parameter(torch.tensor(0.0))
@@ -173,10 +175,8 @@ class Conv1d(KernelModule):
         self.reset_parameters()
 
     def reset_parameters(self):
-        if self.last_layer:
-            torch.nn.init.constant_(self.alpha, 1.0 / self.kernel_size)
-        else:
-            torch.nn.init.constant_(self.alpha, 2.0 / self.kernel_size)
+        torch.nn.init.constant_(self.leak, 1.0)
+        torch.nn.init.constant_(self.alpha, 1.0 / self.kernel_size)
         if self.beta is not None:
             torch.nn.init.constant_(self.beta, 0.0)
     
@@ -205,12 +205,12 @@ class Conv1d(KernelModule):
 
         rho, std_x, std_y = calculate_statistics(v_xx, v_yy, v_xy)      # (b0, b1, n, t)
 
-        c0 = covariance_relu(rho, std_x, std_y)                         # (b0, b1, n, t)
-        c1 = covariance_heaviside(rho, std_x, std_y)                    # (b0, b1, n, t)
+        c0 = covariance_leaky_relu(rho, std_x, std_y, clamp_preserve_grad(self.leak, min=0))
+        c1 = covariance_leaky_relu_derivative(rho, std_x, std_y, clamp_preserve_grad(self.leak, min=0))
 
         k_gp = torch.nn.functional.conv1d(
             c0.reshape(-1, 1, k_gp.size(-1)),
-            self.alpha.abs(),
+            clamp_preserve_grad(self.alpha, min=0),
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation
@@ -218,15 +218,15 @@ class Conv1d(KernelModule):
 
         k_ntk = torch.nn.functional.conv1d(
             c1.mul(k_ntk).reshape(-1, 1, k_ntk.size(-1)),
-            self.alpha.abs(),
+            clamp_preserve_grad(self.alpha, min=0),
             stride=self.stride,
             padding=self.padding,
             dilation=self.dilation
         ).reshape(c1.size(0), c1.size(1), c1.size(2), -1) + k_gp
 
         if self.beta is not None:
-            k_gp = k_gp + self.beta.abs()
-            k_ntk = k_ntk + self.beta.abs()
+            k_gp = k_gp + clamp_preserve_grad(self.beta, min=0)
+            k_ntk = k_ntk + clamp_preserve_grad(self.beta, min=0)
 
         k = torch.stack([k_gp, k_ntk], dim=-1)
         
