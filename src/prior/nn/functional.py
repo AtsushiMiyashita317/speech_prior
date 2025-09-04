@@ -88,7 +88,7 @@ def series_covariance_mask(mask: torch.Tensor, n: int) -> torch.Tensor:
         stride=(0, mask.stride(0), mask.stride(1), mask.stride(1)),
         storage_offset=0
     )
-    k_mask = mask.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1) * mask_strided  # (b, b, n, t)
+    k_mask = mask.narrow(-1, 0, T).unsqueeze(1).unsqueeze(1).logical_and(mask_strided)  # (b, b, n, t)
 
     return k_mask.ge(0.5)
 

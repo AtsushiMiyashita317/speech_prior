@@ -22,8 +22,8 @@ class SeriesCollator:
         D = batch[0][1].shape[1]
         batch_wave = torch.zeros((B, Smax))
         batch_feature = torch.zeros((B, Fmax, D))
-        mask_wave = torch.zeros((B, Smax), dtype=torch.long)
-        mask_feature = torch.zeros((B, Fmax), dtype=torch.long)
+        mask_wave = torch.zeros((B, Smax), dtype=torch.int)
+        mask_feature = torch.zeros((B, Fmax), dtype=torch.bool)
         for i, b in enumerate(batch):
             wave, features = b
             f = features.shape[0]
