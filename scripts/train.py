@@ -274,6 +274,18 @@ def main_worker(rank, world_size, args):
         num_training_steps=num_training_steps
     )
 
+    # チェックポイント復帰
+    start_epoch = 0
+    if args.resume_checkpoint is not None and os.path.isfile(args.resume_checkpoint):
+        map_location = device if torch.cuda.is_available() else "cpu"
+        checkpoint = torch.load(args.resume_checkpoint, map_location=map_location)
+        model.module.load_state_dict(checkpoint['model_state_dict'])
+        prototype.module.load_state_dict(checkpoint['prototype_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0) + 1
+        print(f"[rank {rank}] Resumed from checkpoint: {args.resume_checkpoint} (epoch {start_epoch})")
+
     if rank == 0:
         print("\nオプティマイザとスケジューラを設定しました。")
         print("Optimizer:", optimizer.__class__.__name__)
@@ -281,7 +293,7 @@ def main_worker(rank, world_size, args):
 
     train_pbar = tqdm(total=len(train_dataloader)) if rank == 0 else None
     valid_pbar = tqdm(total=len(valid_dataloader)) if rank == 0 else None
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         train_sampler.set_epoch(epoch)
         model.train()
         prototype.train()
@@ -348,6 +360,7 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=500)
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="12355")
+    parser.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume from.")
 
     args = parser.parse_args()
 
