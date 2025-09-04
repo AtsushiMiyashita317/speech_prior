@@ -3,7 +3,7 @@ import torch
 def clamp_preserve_grad(x: torch.Tensor, min: float=None, max: float=None) -> torch.Tensor:
     return torch.clamp(x.detach(), min, max) + (x - x.detach())
 
-def calculate_statistics(v_xx: torch.Tensor, v_yy: torch.Tensor, v_xy: torch.Tensor, eps=1e-10) -> torch.Tensor:
+def calculate_statistics(v_xx: torch.Tensor, v_yy: torch.Tensor, v_xy: torch.Tensor, eps=1e-6) -> torch.Tensor:
     v_xx = clamp_preserve_grad(v_xx, min=eps)
     v_yy = clamp_preserve_grad(v_yy, min=eps)
     std_x = torch.sqrt(v_xx)
@@ -130,7 +130,7 @@ def series_correlation(k: torch.Tensor) -> torch.Tensor:
     
     return rho
 
-def kld_gaussian(p_var: torch.Tensor, q_var: torch.Tensor, eps=1e-10) -> torch.Tensor:
+def kld_gaussian(p_var: torch.Tensor, q_var: torch.Tensor, eps=1e-6) -> torch.Tensor:
     """KL divergence between two Gaussian distributions.
 
     Args:

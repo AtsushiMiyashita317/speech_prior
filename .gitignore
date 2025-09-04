@@ -1,6 +1,7 @@
 /data
 /dumps
 /datasets
+/datasets_tmp
 /stats
 /wandb
 venv

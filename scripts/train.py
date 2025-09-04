@@ -26,11 +26,6 @@ def main_worker(rank, world_size, args):
     from prior.nn.model.feature_extractor import BothsidePaddedWav2Vec2Model
     
 
-    def is_cuda_oom(err: Exception) -> bool:
-        msg = str(err).lower()
-        return isinstance(err, RuntimeError) and ("CUDA out of memory" in msg)
-
-
     def forward_one_step(
         batch, model, prototype, device, kernel_bins
     ):
@@ -63,25 +58,11 @@ def main_worker(rank, world_size, args):
 
         x = cor_feature.masked_select(cov_mask)
         y = cor_teacher.masked_select(cov_mask)
-        # デバッグ: nan/infチェック
-        if torch.isnan(feature).any() or torch.isinf(feature).any():
-            print("[DEBUG] feature contains nan/inf")
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            print("[DEBUG] x (cor_feature.masked_select) contains nan/inf")
-        if torch.isnan(y).any() or torch.isinf(y).any():
-            print("[DEBUG] y (cor_teacher.masked_select) contains nan/inf")
+        
         cor_loss = torch.nn.functional.mse_loss(x, y)
-        if torch.isnan(cor_loss) or torch.isinf(cor_loss):
-            print(f"[DEBUG] cor_loss is nan/inf: {cor_loss}")
         vx = series_variance(cov_feature).masked_select(teacher_mask.bool())
         vy = series_variance(cov_teacher).masked_select(teacher_mask.bool())
-        if torch.isnan(vx).any() or torch.isinf(vx).any():
-            print("[DEBUG] vx (series_variance cov_feature) contains nan/inf")
-        if torch.isnan(vy).any() or torch.isinf(vy).any():
-            print("[DEBUG] vy (series_variance cov_teacher) contains nan/inf")
         var_loss = kld_gaussian(vy, vx).mean()
-        if torch.isnan(var_loss) or torch.isinf(var_loss):
-            print(f"[DEBUG] var_loss is nan/inf: {var_loss}")
         return cor_feature, cor_teacher, cor_loss, var_loss
 
 
@@ -100,21 +81,11 @@ def main_worker(rank, world_size, args):
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
                     _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
                     loss = cor_loss + var_loss
-                    # デバッグ: nan/infチェック
-                    if torch.isnan(loss) or torch.isinf(loss):
-                        print(f"[DEBUG] loss is nan/inf: {loss}")
-                    if torch.isnan(cor_loss) or torch.isinf(cor_loss):
-                        print(f"[DEBUG] cor_loss is nan/inf: {cor_loss}")
-                    if torch.isnan(var_loss) or torch.isinf(var_loss):
-                        print(f"[DEBUG] var_loss is nan/inf: {var_loss}")
 
                 scaler.scale(loss).backward()
 
-            except Exception as e:
-                if is_cuda_oom(e):
-                    oom_flag += 1  # この rank で OOM
-                else:
-                    raise  # 別の例外はそのまま
+            except torch.OutOfMemoryError:
+                oom_flag += 1  # この rank で OOM
 
             # どこか1つでも OOM があれば全員でスキップ
             dist.all_reduce(oom_flag, op=dist.ReduceOp.SUM)
