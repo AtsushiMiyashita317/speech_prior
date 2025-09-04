@@ -50,25 +50,38 @@ def main_worker(rank, world_size, args):
         cov_feature = cov_feature.masked_fill(cov_mask_not, 0.0)
         cov_feature = torch.stack([cov_feature, cov_feature], dim=-1)
         cov_feature = prototype.module.forward(cov_feature, mask=cov_mask_not.unsqueeze(-1)).select(-1, 1)
-        
+
         v = series_variance(cov_teacher)
         stable_mask = series_covariance_mask(v.lt(2.0).long(), n)
         cov_mask = cov_mask.logical_and(stable_mask)
         cov_mask_not = cov_mask.logical_not()
         cov_teacher = cov_teacher.masked_fill(cov_mask_not, 0.0)
         cov_feature = cov_feature.masked_fill(cov_mask_not, 0.0)
-        
+
         cor_feature = series_correlation(cov_feature)
         cor_teacher = series_correlation(cov_teacher)
-        
-        
+
         x = cor_feature.masked_select(cov_mask)
         y = cor_teacher.masked_select(cov_mask)
+        # デバッグ: nan/infチェック
+        if torch.isnan(feature).any() or torch.isinf(feature).any():
+            print("[DEBUG] feature contains nan/inf")
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            print("[DEBUG] x (cor_feature.masked_select) contains nan/inf")
+        if torch.isnan(y).any() or torch.isinf(y).any():
+            print("[DEBUG] y (cor_teacher.masked_select) contains nan/inf")
         cor_loss = torch.nn.functional.mse_loss(x, y)
-        # loss = torch.nn.functional.mse_loss(x, y)
+        if torch.isnan(cor_loss) or torch.isinf(cor_loss):
+            print(f"[DEBUG] cor_loss is nan/inf: {cor_loss}")
         vx = series_variance(cov_feature).masked_select(teacher_mask.bool())
         vy = series_variance(cov_teacher).masked_select(teacher_mask.bool())
+        if torch.isnan(vx).any() or torch.isinf(vx).any():
+            print("[DEBUG] vx (series_variance cov_feature) contains nan/inf")
+        if torch.isnan(vy).any() or torch.isinf(vy).any():
+            print("[DEBUG] vy (series_variance cov_teacher) contains nan/inf")
         var_loss = kld_gaussian(vy, vx).mean()
+        if torch.isnan(var_loss) or torch.isinf(var_loss):
+            print(f"[DEBUG] var_loss is nan/inf: {var_loss}")
         return cor_feature, cor_teacher, cor_loss, var_loss
 
 
@@ -87,6 +100,13 @@ def main_worker(rank, world_size, args):
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
                     _, _, cor_loss, var_loss = forward_one_step(batch, model, prototype, device, kernel_bins)
                     loss = cor_loss + var_loss
+                    # デバッグ: nan/infチェック
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        print(f"[DEBUG] loss is nan/inf: {loss}")
+                    if torch.isnan(cor_loss) or torch.isinf(cor_loss):
+                        print(f"[DEBUG] cor_loss is nan/inf: {cor_loss}")
+                    if torch.isnan(var_loss) or torch.isinf(var_loss):
+                        print(f"[DEBUG] var_loss is nan/inf: {var_loss}")
 
                 scaler.scale(loss).backward()
 
