@@ -117,11 +117,34 @@ def main():
                 seen_features.add(key)
         utterance_records.append(utterance)
 
+    # --- parquet更新 ---
+    features_path = os.path.join(args.dataset_root, args.features_parquet)
+    utterance_path = os.path.join(args.dataset_root, args.utterance_parquet)
+    if os.path.exists(features_path):
+        existing_features_df = pl.read_parquet(features_path)
+        existing_features = set((row["model"], row["layer"]) for row in existing_features_df.to_dicts())
+        new_features = [feat for feat in features_records if (feat["model"], feat["layer"]) not in existing_features]
+        if new_features:
+            new_features_df = pl.DataFrame(new_features)
+            features_df = pl.concat([existing_features_df, new_features_df])
+        else:
+            features_df = existing_features_df
+    else:
+        features_df = pl.DataFrame(features_records)
+    if os.path.exists(utterance_path):
+        existing_utterance_df = pl.read_parquet(utterance_path)
+        existing_utterance = set(row["utt_id"] for row in existing_utterance_df.to_dicts())
+        new_utterance = [utt for utt in utterance_records if utt["utt_id"] not in existing_utterance]
+        if new_utterance:
+            new_utterance_df = pl.DataFrame(new_utterance)
+            utterance_df = pl.concat([existing_utterance_df, new_utterance_df])
+        else:
+            utterance_df = existing_utterance_df
+    else:
+        utterance_df = pl.DataFrame(utterance_records)
     # --- parquet保存 ---
-    features_df = pl.DataFrame(features_records)
-    utterance_df = pl.DataFrame(utterance_records)
-    features_df.write_parquet(os.path.join(args.dataset_root, args.features_parquet))
-    utterance_df.write_parquet(os.path.join(args.dataset_root, args.utterance_parquet))
+    features_df.write_parquet(features_path)
+    utterance_df.write_parquet(utterance_path)
 
 if __name__ == "__main__":
     main()

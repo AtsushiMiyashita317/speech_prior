@@ -69,10 +69,9 @@ def main_worker(rank, world_size, args):
     def train_one_epoch(
         train_dataloader,
         model, prototype, 
-        optimizer, scheduler,
+        optimizer, scheduler, scaler,
         device, rank, pbar, kernel_bins
     ):
-        scaler = torch.amp.GradScaler()
         for batch_idx, batch in enumerate(train_dataloader):            
             # rank間共有の OOM フラグ
             oom_flag = torch.zeros(1, device=device, dtype=torch.int32)
@@ -228,7 +227,7 @@ def main_worker(rank, world_size, args):
         args.utterance_parquet,
         cache_dir=args.cache_dir,
         budget_bytes=6 << 40,
-        subset_list=["train-clean-100"],
+        subset_list=["train-clean-100", "train-clean-360", "train-other-500"],
         stats_path="stats/train-clean-100.npz",
     )
 
@@ -239,14 +238,15 @@ def main_worker(rank, world_size, args):
         args.utterance_parquet,
         cache_dir=args.cache_dir,
         budget_bytes=6 << 40,
-        subset_list=["dev-clean"],
-        stats_path="stats/dev-clean.npz",
+        subset_list=["dev-clean", "dev-other"],
+        stats_path="stats/train-clean-100.npz",
     )
 
     train_sampler = FoldedLengthBatchSampler(
         train_dataset.utt_lens,
         args.batch_bins,
         args.num_folds,
+        num_outliers=150,
         shuffle=True,
         num_replicas=world_size,
         rank=rank
@@ -255,7 +255,7 @@ def main_worker(rank, world_size, args):
     valid_sampler = FoldedLengthBatchSampler(
         valid_dataset.utt_lens,
         args.batch_bins // 2,
-        args.num_folds,
+        1,
         shuffle=False,
         num_replicas=world_size,
         rank=rank
@@ -302,6 +302,7 @@ def main_worker(rank, world_size, args):
         num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps
     )
+    scaler = torch.amp.GradScaler()
 
     # チェックポイント復帰
     start_epoch = 0
@@ -311,8 +312,8 @@ def main_worker(rank, world_size, args):
         model.module.load_state_dict(checkpoint['model_state_dict'])
         prototype.module.load_state_dict(checkpoint['prototype_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint.get('epoch', 0) + 1
+        # scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        # start_epoch = checkpoint.get('epoch', 0) + 1
         print(f"[rank {rank}] Resumed from checkpoint: {args.resume_checkpoint} (epoch {start_epoch})")
 
     if rank == 0:
@@ -333,6 +334,7 @@ def main_worker(rank, world_size, args):
             prototype,
             optimizer,
             scheduler,
+            scaler,
             device,
             rank,
             train_pbar,
@@ -355,7 +357,7 @@ def main_worker(rank, world_size, args):
             plot(plot_batch, model, prototype, device, args.kernel_bins)
         
 
-        if epoch % 10 == 0 and rank == 0:
+        if epoch % 1 == 0 and rank == 0:
             # チェックポイントの保存 (rank 0 のみ)
             checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pt")
             torch.save({

@@ -8,6 +8,7 @@ class FoldedLengthBatchSampler(Sampler):
         length_list,
         batch_bins,
         num_folds,
+        num_outliers=0,
         shuffle=True,
         num_replicas=1,
         rank=0,
@@ -16,22 +17,20 @@ class FoldedLengthBatchSampler(Sampler):
         self.length_list = length_list
         self.batch_bins = batch_bins
         self.num_folds = num_folds
+        self.num_outliers = num_outliers
         self.shuffle = shuffle
         self.num_replicas = num_replicas
         self.rank = rank
         self.epoch = 0
         self.seed = seed
+        self.sorted_indices = sorted(range(len(length_list)), key=lambda idx: length_list[idx], reverse=True)
         self.batch_indices = []
         self.create_batch_indices()
-
-    def create_batch_indices(self):
-        random.seed(self.seed + self.epoch)
-        shuffled_indices = list(range(len(self.length_list)))
-        if self.shuffle:
-            random.shuffle(shuffled_indices)
+        
+    def generate_batch_indices(self, indices, num_folds):
         folds = []
         for i in range(self.num_folds):
-            fold_indices = shuffled_indices[i::self.num_folds]
+            fold_indices = indices[i::self.num_folds]
             fold_indices = sorted(fold_indices, key=lambda idx: self.length_list[idx], reverse=True)
             folds.append(fold_indices)
 
@@ -49,12 +48,39 @@ class FoldedLengthBatchSampler(Sampler):
                 seek += batch_size
                 if seek >= len(fold):
                     break
+                
+        return batch_indices, rest_indices
+
+    def create_batch_indices(self):
+        random.seed(self.seed + self.epoch)
+        if self.num_outliers > 0:
+            outliers = self.sorted_indices[:self.num_outliers]
+            indices = self.sorted_indices[self.num_outliers:]
+        else:
+            indices = self.sorted_indices[:]
+            outliers = []
+            
+        if self.shuffle:
+            random.shuffle(indices)
+            random.shuffle(outliers)
+        
+        batch_indices, rest_indices = self.generate_batch_indices(indices, self.num_folds)        
+        rest_batch_indices, rest_indices = self.generate_batch_indices(rest_indices, (self.num_folds * len(rest_indices)) // len(indices) + 1)
+        batch_indices.extend(rest_batch_indices)
+        rest_indices = sorted(rest_indices, key=lambda idx: self.length_list[idx], reverse=True)
         
         seek = 0
         while seek < len(rest_indices):
             first_sample = rest_indices[seek]
             batch_size = self.batch_bins // self.length_list[first_sample]
             batch_indices.append(rest_indices[seek:min(seek + batch_size, len(rest_indices))])
+            seek += batch_size
+            
+        seek = 0
+        while seek < len(outliers):
+            first_sample = outliers[seek]
+            batch_size = self.batch_bins // self.length_list[first_sample]
+            batch_indices.append(outliers[seek:min(seek + batch_size, len(outliers))])
             seek += batch_size
 
         n = len(batch_indices)

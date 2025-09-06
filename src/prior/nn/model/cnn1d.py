@@ -1,72 +1,57 @@
 import torch
 from typing import Iterable
 
+import prior.nn.module.posterior as posterior
 import prior.nn.module.network as network
 import prior.nn.module.kernel as kernel
 
 
-class CNN1dNetwork(network.NetworkModule):
+class CNN1dPosterior(posterior.PosteriorModule):
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
         hidden_channels: int,
-        input_layer: kernel.Conv1d1x1 = None,
-        hidden_layers: Iterable[kernel.Conv1d] = None,
-        output_layer: kernel.Conv1d = None,
+        input_layer: kernel.Conv1d1x1,
+        hidden_layers: Iterable[kernel.Conv1d],
+        output_layer: kernel.Conv1d,
     ):
-        super(CNN1dNetwork, self).__init__()
+        super(CNN1dPosterior, self).__init__()
 
-        self.input_layer = network.Conv1d1x1(
+        self.input_layer = posterior.Conv1d1x1(
             in_channels=in_channels,
             out_channels=hidden_channels,
-            bias=input_layer.bias_flag if input_layer is not None else True,
-            alpha=input_layer.alpha.item() if input_layer is not None else 2.0,
-            beta=input_layer.beta.item() if input_layer is not None and input_layer.beta is not None else None,
+            bias=input_layer.bias_flag,
+            alpha=input_layer.alpha,
+            beta=input_layer.beta,
         )
-        if hidden_layers is not None:
-            self.hidden_layers = torch.nn.ModuleList([
-                network.Conv1d(
-                    in_channels=hidden_channels,
-                    out_channels=hidden_channels,
-                    kernel_size=hidden_layer.kernel_size,
-                    bias=hidden_layer.bias_flag,
-                    last_layer=False,
-                    stride=hidden_layer.stride,
-                    padding=hidden_layer.padding,
-                    dilation=hidden_layer.dilation,
-                    alpha=hidden_layer.alpha.item(),
-                    beta=hidden_layer.beta.item() if hidden_layer.beta is not None else None,
-                ) for hidden_layer in hidden_layers
-            ])
-        else:
-            self.hidden_layers = torch.nn.ModuleList()
-            for _ in range(2):
-                self.hidden_layers.append(
-                    network.Conv1d(
-                        in_channels=hidden_channels,
-                        out_channels=hidden_channels,
-                        kernel_size=3,
-                        bias=True,
-                        last_layer=False,
-                        stride=1,
-                        padding=1,
-                        dilation=1,
-                        alpha=2.0,
-                        beta=0.0
-                    )
-                )
-        self.output_layer = network.Conv1d(
+        self.hidden_layers = torch.nn.ModuleList([
+            posterior.Conv1d(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                kernel_size=hidden_layer.kernel_size,
+                bias=hidden_layer.bias_flag,
+                last_layer=False,
+                stride=hidden_layer.stride,
+                padding=hidden_layer.padding,
+                dilation=hidden_layer.dilation,
+                alpha=hidden_layer.alpha,
+                beta=hidden_layer.beta,
+                leak=hidden_layer.leak,
+            ) for hidden_layer in hidden_layers
+        ])
+        self.output_layer = posterior.Conv1d(
             in_channels=hidden_channels,
             out_channels=out_channels,
-            kernel_size=output_layer.kernel_size if output_layer is not None else 3,
-            bias=output_layer.bias_flag if output_layer is not None else True,
+            kernel_size=output_layer.kernel_size,
+            bias=output_layer.bias_flag,
             last_layer=True,
-            stride=output_layer.stride if output_layer is not None else 1,
-            padding=output_layer.padding if output_layer is not None else 1,
-            dilation=output_layer.dilation if output_layer is not None else 1,
-            alpha=output_layer.alpha.item() if output_layer is not None else 2.0,
-            beta=output_layer.beta.item() if output_layer is not None and output_layer.beta is not None else None,
+            stride=output_layer.stride,
+            padding=output_layer.padding,
+            dilation=output_layer.dilation,
+            alpha=output_layer.alpha,
+            beta=output_layer.beta,
+            leak=output_layer.leak,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -82,6 +67,60 @@ class CNN1dNetwork(network.NetworkModule):
             reg = reg + layer.regularizer()
         reg = reg + self.output_layer.regularizer()
         return reg
+
+
+class CNN1dNetwork(torch.nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        hidden_channels: int,
+        input_layer: kernel.Conv1d1x1,
+        hidden_layers: Iterable[kernel.Conv1d],
+        output_layer: kernel.Conv1d,
+    ):
+        super(CNN1dNetwork, self).__init__()
+
+        self.input_layer = network.Conv1d1x1(
+            in_channels=in_channels,
+            out_channels=hidden_channels,
+            bias=input_layer.bias_flag,
+            alpha=input_layer.alpha,
+            beta=input_layer.beta,
+        )
+        self.hidden_layers = torch.nn.ModuleList([
+            network.Conv1d(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                kernel_size=hidden_layer.kernel_size,
+                bias=hidden_layer.bias_flag,
+                stride=hidden_layer.stride,
+                padding=hidden_layer.padding,
+                dilation=hidden_layer.dilation,
+                alpha=hidden_layer.alpha,
+                beta=hidden_layer.beta,
+                leak=hidden_layer.leak,
+            ) for hidden_layer in hidden_layers
+        ])
+        self.output_layer = network.Conv1d(
+            in_channels=hidden_channels,
+            out_channels=out_channels,
+            kernel_size=output_layer.kernel_size,
+            bias=output_layer.bias_flag,
+            stride=output_layer.stride,
+            padding=output_layer.padding,
+            dilation=output_layer.dilation,
+            alpha=output_layer.alpha,
+            beta=output_layer.beta,
+            leak=output_layer.leak,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_layer.forward(x)
+        for layer in self.hidden_layers:
+            x = layer.forward(x)
+        x = self.output_layer.forward(x)
+        return x
 
 
 class CNN1dKernel(kernel.KernelModule):
@@ -126,6 +165,16 @@ class CNN1dKernel(kernel.KernelModule):
             k = k.masked_fill(mask, 0.0)
         return k
     
+    def export_posterior(self, in_channels: int, out_channels: int, hidden_channels: int) -> CNN1dPosterior:
+        return CNN1dPosterior(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            hidden_channels=hidden_channels,
+            input_layer=self.input_layer,
+            output_layer=self.output_layer,
+            hidden_layers=self.hidden_layers
+        )
+        
     def export_network(self, in_channels: int, out_channels: int, hidden_channels: int) -> CNN1dNetwork:
         return CNN1dNetwork(
             in_channels=in_channels,

@@ -1,13 +1,15 @@
-import math
-
 import torch
 
+import prior.nn.module.posterior as posterior
 import prior.nn.module.network as network
 from prior.nn.functional import calculate_statistics, covariance_leaky_relu, covariance_leaky_relu_derivative, clamp_preserve_grad
     
 
 class KernelModule(torch.nn.Module):
-    def export_network(self, **kwargs) -> network.NetworkModule:
+    def export_posterior(self, **kwargs) -> posterior.PosteriorModule:
+        raise NotImplementedError
+    
+    def export_network(self, **kwargs) -> torch.nn.Module:
         raise NotImplementedError
 
 class Embedding(KernelModule):
@@ -37,13 +39,22 @@ class Embedding(KernelModule):
             k = k + clamp_preserve_grad(self.beta, min=0)
         return k
     
-    def export_network(self, in_features, out_features, **kwargs) -> network.Embedding:
+    def export_posterior(self, in_features, out_features, **kwargs) -> posterior.Embedding:
+        return posterior.Embedding(
+            in_features=in_features,
+            out_features=out_features,
+            bias=self.bias_flag,
+            alpha=self.alpha,
+            beta=self.beta,
+        )
+        
+    def export_network(self, in_features, out_features, **kwargs) -> torch.nn.Module:
         return network.Embedding(
             in_features=in_features,
             out_features=out_features,
             bias=self.bias_flag,
-            alpha=self.alpha.item(),
-            beta=self.beta.item() if self.beta is not None else None,
+            alpha=self.alpha,
+            beta=self.beta,
         )
 
 
@@ -91,13 +102,25 @@ class Linear(KernelModule):
         k = torch.stack([k_gp, k_ntk], dim=-1)
         return k
  
-    def export_network(self, in_features, out_features, **kwargs) -> network.Linear:
+    def export_posterior(self, in_features, out_features, **kwargs) -> posterior.Linear:
+        return posterior.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            bias=self.bias_flag,
+            last_layer=self.last_layer,
+            alpha=self.alpha,
+            beta=self.beta,
+            leak=self.leak,
+        )
+        
+    def export_network(self, in_features, out_features, **kwargs) -> torch.nn.Module:
         return network.Linear(
             in_features=in_features,
             out_features=out_features,
             bias=self.bias_flag,
-            alpha=self.alpha.item(),
-            beta=self.beta.item() if self.beta is not None else None,
+            alpha=self.alpha,
+            beta=self.beta,
+            leak=self.leak,
         )
 
 
@@ -137,13 +160,22 @@ class Conv1d1x1(KernelModule):
 
         return k
 
-    def export_network(self, in_channels, out_channels, **kwargs) -> network.Conv1d1x1:
+    def export_posterior(self, in_channels, out_channels, **kwargs) -> posterior.Conv1d1x1:
+        return posterior.Conv1d1x1(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            bias=self.bias_flag,
+            alpha=self.alpha,
+            beta=self.beta,
+        )
+        
+    def export_network(self, in_channels, out_channels, **kwargs) -> torch.nn.Module:
         return network.Conv1d1x1(
             in_channels=in_channels,
             out_channels=out_channels,
             bias=self.bias_flag,
-            alpha=self.alpha.item(),
-            beta=self.beta.item() if self.beta is not None else None,
+            alpha=self.alpha,
+            beta=self.beta,
         )
 
 
@@ -232,11 +264,28 @@ class Conv1d(KernelModule):
         
         return k
 
-    def export_network(self, in_channels, out_channels, **kwargs) -> network.Conv1d:
-        return network.Conv1d(
+    def export_posterior(self, in_channels, out_channels, **kwargs) -> posterior.Conv1d:
+        return posterior.Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
             bias=self.bias_flag,
+            last_layer=self.last_layer,
             alpha=self.alpha.data,
-            beta=self.beta.data if self.beta is not None else None,
+            beta=self.beta.data,
+            leak=self.leak.data,
         )
+        
+    def export_network(self, in_channels, out_channels, **kwargs) -> torch.nn.Module:
+        return network.Conv1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=self.kernel_size,
+            bias=self.bias_flag,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            alpha=self.alpha.data,
+            beta=self.beta.data,
+            leak=self.leak.data,
+        )
+        
