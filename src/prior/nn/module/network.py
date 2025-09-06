@@ -153,7 +153,7 @@ class Conv1d1x1(torch.nn.Module):
             self.register_buffer("alpha", torch.tensor(alpha).clamp(min=0.0))
 
         if bias:
-            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+            self.bias = torch.nn.Parameter(torch.empty(out_channels, 1))
             if beta is None:
                 self.register_buffer("beta", torch.tensor(0.0))
             elif type(beta) == torch.Tensor:
@@ -224,7 +224,7 @@ class Conv1d(torch.nn.Module):
             self.register_buffer("alpha", torch.tensor(alpha).clamp(min=0.0))
 
         if bias:
-            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+            self.bias = torch.nn.Parameter(torch.empty(out_channels, 1))
             if beta is None:
                 self.register_buffer("beta", torch.tensor(0.0))
             elif type(beta) == torch.Tensor:

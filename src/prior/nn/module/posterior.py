@@ -214,7 +214,7 @@ class Conv1d1x1(PosteriorModule):
             self.register_buffer("alpha", torch.tensor(alpha).clamp(min=0.0))
 
         if bias:
-            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+            self.bias = torch.nn.Parameter(torch.empty(out_channels, 1))
             self.b0 = torch.nn.Parameter(torch.empty(out_channels), requires_grad=False)
             self.b = torch.nn.Parameter(torch.empty(out_channels), requires_grad=False)
             if beta is None:
@@ -315,7 +315,7 @@ class Conv1d(PosteriorModule):
             self.register_buffer("alpha", torch.tensor(alpha).clamp(min=0.0))
 
         if bias:
-            self.bias = torch.nn.Parameter(torch.empty(out_channels))
+            self.bias = torch.nn.Parameter(torch.empty(out_channels, 1))
             self.b0 = torch.nn.Parameter(torch.empty(out_channels), requires_grad=False)
             self.b = torch.nn.Parameter(torch.empty(out_channels), requires_grad=False)
             if beta is None:
