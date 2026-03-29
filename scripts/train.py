@@ -219,6 +219,38 @@ def main_worker(rank, world_size, args):
         os.makedirs(checkpoint_dir, exist_ok=True)
     else:
         checkpoint_dir = None
+        
+    if args.teachers == "base":
+        model_layers = {
+            "hubert": [6, 9, 11],
+            "wavlm": [6, 9, 11],
+        }
+    elif args.teachers == "wav2vec2_69":
+        model_layers = {
+            "hubert": [6, 9, 11],
+            "wavlm": [6, 9, 11],
+            "wav2vec2": [6, 9],
+        }
+    elif args.teachers == "wav2vec2_11":
+        model_layers = {
+            "hubert": [6, 9, 11],
+            "wavlm": [6, 9, 11],
+            "wav2vec2": [11],
+        }
+    elif args.teachers == "whisper":
+        model_layers = {
+            "hubert": [6, 9, 11],
+            "wavlm": [6, 9, 11],
+            "whisper": [6, 9, 11],
+        }
+    elif args.teachers == "xvector":
+        model_layers = {
+            "hubert": [6, 9, 11],
+            "wavlm": [6, 9, 11],
+            "xvector": [1, 2, 3],
+        }
+    else:
+        model_layers = None
 
     train_dataset = HDF5Dataset(
         args.base_dir,
@@ -229,6 +261,7 @@ def main_worker(rank, world_size, args):
         budget_bytes=6 << 40,
         subset_list=["train-clean-100", "train-clean-360", "train-other-500"],
         stats_path="stats/train-clean-100.npz",
+        model_layers=model_layers,
     )
 
     valid_dataset = HDF5Dataset(
@@ -240,6 +273,7 @@ def main_worker(rank, world_size, args):
         budget_bytes=6 << 40,
         subset_list=["dev-clean", "dev-other"],
         stats_path="stats/train-clean-100.npz",
+        model_layers=model_layers,
     )
 
     train_sampler = FoldedLengthBatchSampler(
@@ -392,6 +426,7 @@ def main():
     parser.add_argument("--master_addr", type=str, default="localhost")
     parser.add_argument("--master_port", type=str, default="12355")
     parser.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume from.")
+    parser.add_argument("--teachers", type=str, default=None)
 
     args = parser.parse_args()
 

@@ -1,7 +1,7 @@
 import os
 import h5py
 import polars as pl
-import torch
+from torch import tensor, from_numpy, sqrt, cat, Tensor
 import numpy as np
 
 from prior.utils.data import DiskLRU
@@ -36,8 +36,8 @@ class HDF5Dataset:
         
         if stats_path is not None:
             stats = np.load(stats_path)
-            mean = torch.tensor(stats["mean"])
-            smean = torch.tensor(stats["smean"])
+            mean = tensor(stats["mean"])
+            smean = tensor(stats["smean"])
         else:
             mean = None
             smean = None
@@ -58,8 +58,20 @@ class HDF5Dataset:
                 
         if mean is not None:
             self.mean = mean
-            std = torch.sqrt(smean - mean**2)
+            std = sqrt(smean - mean**2)
             self.std = std
+            
+            if self.model_layers is not None:
+                selected_means = []
+                selected_stds = []
+                for model in self.model_layers.keys():
+                    if model in self.feature_range:
+                        for layer in self.model_layers[model]:
+                            start, end = self.feature_range[model][str(layer)]
+                            selected_means.append(self.mean[start:end])
+                            selected_stds.append(self.std[start:end])
+                self.mean = cat(selected_means, dim=0)
+                self.std = cat(selected_stds, dim=0)
         else:
             self.mean = None
             self.std = None
@@ -91,9 +103,16 @@ class HDF5Dataset:
             group = f["utterance"]
             features = group["features"][:]
             waveform = group["waveform"][:]
-            # TODO subset access
+            if self.model_layers is not None:
+                selected_features = []
+                for model in self.model_layers.keys():
+                    if model in self.feature_range:
+                        for layer in self.model_layers[model]:
+                            start, end = self.feature_range[model][str(layer)]
+                            selected_features.append(features[:, start:end])
+                features = np.concatenate(selected_features, axis=1)
 
-        return torch.from_numpy(waveform), torch.from_numpy(features)
+        return from_numpy(waveform), from_numpy(features)
 
     def get_feature_info(self, model, layer):
         # features.parquetからD次元数など取得
